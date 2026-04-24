@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+# Core launcher: start MLX model server + engrave proxy, then exec a runner.
+#
+# Usage (called by wrapper scripts, not directly):
+#   mlx-run --runner claude --model <model|index> [-- runner-args...]
+#   mlx-run --runner codex  --model 11    [-- --full-auto]
+#   mlx-run --runner aider  --model 6     [-- --yes]
+#
+# Environment:
+#   MLX_PORT       — MLX server port (default: 1234)
+#   ENGRAVE_BIN    — path to engrave binary
+set -euo pipefail
+
+MODELS_DIR="${HOME}/.lmstudio/models"
+VENV="${HOME}/.lmstudio/venv"
+CONFIG_FILE="${HOME}/.lmstudio/model-configs.json"
+MLX_PORT="${MLX_PORT:-1234}"
+ENGRAVE_BIN="${ENGRAVE_BIN:-${HOME}/Augments/AgentInterposer/target/release/engrave}"
+ENGRAVE_CONFIG="${HOME}/.config/engrave/config.toml"
+ANTHROPIC_PORT=8901
+OPENAI_PORT=8902
+GEMINI_PORT=8903
+
+# --- Parse arguments ---
+RUNNER=""
+MODEL_ARG=""
+RUNNER_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --runner)  RUNNER="$2"; shift 2 ;;
+        --model)   MODEL_ARG="$2"; shift 2 ;;
+        --)        shift; RUNNER_ARGS=("$@"); break ;;
+        *)         echo "Unknown option: $1"; exit 1 ;;
+    esac
+done
+
+if [[ -z "$RUNNER" || -z "$MODEL_ARG" ]]; then
+    echo "Usage: mlx-run --runner <runner> --model <model|index> [-- runner-args...]"
+    echo ""
+    echo "Runners: claude, codex, gemini, aider, gptme"
+    echo "Models:  run 'mlx-models' to see available models"
+    exit 1
+fi
+
+# --- Resolve model path (reuse mlx-serve's logic) ---
+is_chat_model() {
+    local dir="$1"
+    ls "$dir"/*.gguf &>/dev/null && return 1
+    ls "$dir"/*.safetensors &>/dev/null || ls "$dir"/model-*.safetensors &>/dev/null || return 1
+    local config="$dir/config.json"
+    if [[ -f "$config" ]]; then
+        local model_type
+        model_type=$(python3 -c "import json; print(json.load(open('$config')).get('model_type',''))" 2>/dev/null || echo "")
+        case "$model_type" in
+            gemma4*|gemma3*|gemma2*|glm4*) return 0 ;;
+        esac
+    fi
+    local index="$dir/model.safetensors.index.json"
+    if [[ -f "$index" ]]; then
+        grep -q "lm_head" "$index" || return 1
+    fi
+    return 0
+}
+
+if [[ "$MODEL_ARG" =~ ^[0-9]+$ ]]; then
+    i=1
+    MODEL_PATH=""
+    while IFS= read -r dir; do
+        if is_chat_model "$dir"; then
+            if [[ $i -eq $MODEL_ARG ]]; then
+                MODEL_PATH="$dir"
+                break
+            fi
+            i=$((i + 1))
+        fi
+    done < <(find "$MODELS_DIR" -mindepth 2 -maxdepth 2 -type d | sort)
+    if [[ -z "$MODEL_PATH" ]]; then
+        echo "Error: No model at index $MODEL_ARG. Run 'mlx-models' to see available models."
+        exit 1
+    fi
+else
+    MODEL_PATH="${MODELS_DIR}/${MODEL_ARG}"
+fi
+
+if [[ ! -d "$MODEL_PATH" ]]; then
+    echo "Error: Model not found at $MODEL_PATH"
+    exit 1
+fi
+
+MODEL_NAME=$(echo "$MODEL_PATH" | sed "s|${MODELS_DIR}/||")
+
+# --- Resolve generation params from config ---
+EXTRA_ARGS=()
+if [[ -f "$CONFIG_FILE" ]]; then
+    RESOLVED=$("$VENV/bin/python3" -c "
+import json
+config = json.load(open('$CONFIG_FILE'))
+model_name = '$MODEL_NAME'
+
+arch = '_default'
+try:
+    mc = json.load(open('$MODEL_PATH/config.json'))
+    arch = mc.get('model_type', '_default')
+except: pass
+
+archs = config.get('architectures', {})
+base = dict(archs.get('_default', {}))
+for k, v in archs.get(arch, {}).items():
+    if not k.startswith('_'): base[k] = v
+for k, v in config.get('models', {}).get(model_name, {}).items():
+    if not k.startswith('_'): base[k] = v
+
+args = []
+for k, v in base.items():
+    if k == 'use_default_chat_template' and v:
+        args.append('--use-default-chat-template')
+    elif k == 'chat_template_args':
+        args.append(f'--chat-template-args')
+        args.append(str(v))
+    elif k in ('temp', 'top_p', 'top_k', 'min_p', 'max_tokens'):
+        args.append(f'--{k.replace(\"_\", \"-\")}')
+        args.append(str(v))
+print(' '.join(args))
+" 2>/dev/null || echo "")
+    if [[ -n "$RESOLVED" ]]; then
+        read -ra EXTRA_ARGS <<< "$RESOLVED"
+    fi
+fi
+
+# --- Cleanup function ---
+cleanup() {
+    echo ""
+    echo "Shutting down..."
+    [[ -n "${MLX_PID:-}" ]] && kill "$MLX_PID" 2>/dev/null
+    [[ -n "${ENGRAVE_PID:-}" ]] && kill "$ENGRAVE_PID" 2>/dev/null
+    wait 2>/dev/null
+}
+trap cleanup EXIT
+
+has_model_flag() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --model|--model=*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# --- Start MLX server if not already running ---
+if curl -s "http://localhost:${MLX_PORT}/v1/models" &>/dev/null; then
+    echo "MLX server already running on port ${MLX_PORT}."
+    CURRENT_MODEL=$(curl -s "http://localhost:${MLX_PORT}/v1/models" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d['data'][0]['id'] if d.get('data') else 'unknown')
+" 2>/dev/null || echo "unknown")
+    echo "  Current model: $CURRENT_MODEL"
+    # Check if it's the right model
+    if [[ "$CURRENT_MODEL" != *"$(basename "$MODEL_PATH")"* ]]; then
+        echo "  WARNING: Running model doesn't match requested model ($MODEL_NAME)"
+        echo "  Run 'mlx-stop' first to switch models."
+        exit 1
+    fi
+else
+    echo "Starting MLX server: $MODEL_NAME"
+    "$VENV/bin/python3" -m mlx_lm server \
+        --model "$MODEL_PATH" \
+        --port "$MLX_PORT" \
+        "${EXTRA_ARGS[@]}" &>/dev/null &
+    MLX_PID=$!
+
+    echo -n "  Waiting for server"
+    for _i in $(seq 1 60); do
+        if curl -s "http://localhost:${MLX_PORT}/v1/models" &>/dev/null; then
+            echo " ready!"
+            break
+        fi
+        echo -n "."
+        sleep 2
+    done
+
+    if ! curl -s "http://localhost:${MLX_PORT}/v1/models" &>/dev/null; then
+        echo " failed to start."
+        exit 1
+    fi
+fi
+
+# Get model ID from server
+MODEL_ID=$(curl -s "http://localhost:${MLX_PORT}/v1/models" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d['data'][0]['id'] if d.get('data') else 'local-model')
+" 2>/dev/null || echo "local-model")
+
+# Update engrave config to point at current model
+mkdir -p "$(dirname "$ENGRAVE_CONFIG")"
+cat > "$ENGRAVE_CONFIG" <<TOML
+[server]
+host = "127.0.0.1"
+anthropic_port = $ANTHROPIC_PORT
+openai_port = $OPENAI_PORT
+gemini_port = $GEMINI_PORT
+
+[routes.default.anthropic]
+backend = "mlx_local"
+model = "$MODEL_NAME"
+
+[routes.default.openai]
+backend = "mlx_local"
+model = "$MODEL_NAME"
+
+[routes.default.gemini]
+backend = "mlx_local"
+model = "$MODEL_NAME"
+
+[routes.aliases.local]
+backend = "mlx_local"
+model = "$MODEL_NAME"
+
+# Escape hatches to real cloud APIs
+[routes.aliases.claude-real]
+backend = "anthropic"
+model = "claude-sonnet-4-6"
+
+[routes.aliases.claude-sub]
+backend = "claude_subscription"
+model = "claude-sonnet-4-6"
+
+[providers.mlx_local]
+type = "openai_compatible"
+base_url = "http://localhost:${MLX_PORT}/v1"
+models = ["$MODEL_NAME"]
+TOML
+
+# Start engrave if not running
+if ! "$ENGRAVE_BIN" status --json 2>/dev/null | grep -q '"up"'; then
+    echo "Starting engrave proxy..."
+    "$ENGRAVE_BIN" start --yes &>/dev/null &
+    ENGRAVE_PID=$!
+    sleep 2
+    echo "  Engrave proxy ready (Anthropic:$ANTHROPIC_PORT, OpenAI:$OPENAI_PORT, Gemini:$GEMINI_PORT)"
+else
+    echo "Engrave proxy already running."
+fi
+
+
+# --- Launch the runner ---
+echo ""
+echo "┌─────────────────────────────────────────────"
+echo "│ Runner:             $RUNNER"
+echo "│ Model:              $MODEL_NAME"
+echo "│ MLX:                http://localhost:${MLX_PORT}/v1"
+echo "│ Agent Interposer:   engrave (protocol translation)"
+echo "└─────────────────────────────────────────────"
+echo ""
+
+case "$RUNNER" in
+    claude)
+        CLAUDE_CMD=(claude)
+        if ! has_model_flag "${RUNNER_ARGS[@]:-}"; then
+            CLAUDE_CMD+=(--model "$MODEL_NAME")
+        fi
+        if [[ ${#RUNNER_ARGS[@]} -gt 0 ]]; then
+            CLAUDE_CMD+=("${RUNNER_ARGS[@]}")
+        fi
+        exec env ANTHROPIC_BASE_URL="http://localhost:${ANTHROPIC_PORT}" \
+            #ANTHROPIC_API_KEY="mlx-local" \
+            "${CLAUDE_CMD[@]}"
+        ;;
+     codex)
+       CODEX_CMD=(codex)
+        if ! has_model_flag "${RUNNER_ARGS[@]:-}"; then
+	    CODEX_CMD+=(-c 'model_provider="oss"')
+            CODEX_CMD+=(-c 'model="$MODEL_ID"')
+            CODEX_CMD+=(-c 'openai_base_url="http://localhost:${CODEX_PORT}"')
+            CODEX_CMD+=(-c 'openai_api_key="mlx-local"')
+
+        fi
+        if [[ ${#RUNNER_ARGS[@]} -gt 0 ]]; then
+            CODEX_CMD+=("${RUNNER_ARGS[@]}")
+        fi
+        exec env OPENAI_BASE_URL="http://localhost:${GEMINI_PORT}" \
+            OPENAI_API_KEY="mlx-local" \
+            "${CODEX__CMD[@]}"
+        ;;
+    gemini)
+        GEMINI_CMD=(gemini)
+        if ! has_model_flag "${RUNNER_ARGS[@]:-}"; then
+            GEMINI_CMD+=(--model "$MODEL_NAME")
+        fi
+        if [[ ${#RUNNER_ARGS[@]} -gt 0 ]]; then
+            GEMINI_CMD+=("${RUNNER_ARGS[@]}")
+        fi
+        exec env GOOGLE_GEMINI_BASE_URL="http://localhost:${GEMINI_PORT}" \
+            GOOGLE_API_KEY="mlx-local" \
+            "${GEMINI_CMD[@]}"
+        ;;
+    aider)
+        AIDER_CMD=(
+            aider
+            --openai-api-base "http://localhost:${MLX_PORT}/v1"
+            --openai-api-key "mlx-local"
+            --model "openai/$MODEL_ID"
+            --no-auto-commits
+        )
+        if [[ ${#RUNNER_ARGS[@]} -gt 0 ]]; then
+            AIDER_CMD+=("${RUNNER_ARGS[@]}")
+        fi
+        exec "${AIDER_CMD[@]}"
+        ;;
+    gptme)
+        GPTME_CMD=(gptme)
+        if ! has_model_flag "${RUNNER_ARGS[@]:-}"; then
+            GPTME_CMD+=(--model "$MODEL_NAME")
+        fi
+        if [[ ${#RUNNER_ARGS[@]} -gt 0 ]]; then
+            GPTME_CMD+=("${RUNNER_ARGS[@]}")
+        fi
+        exec env OPENAI_BASE_URL="http://localhost:${MLX_PORT}/v1" \
+            OPENAI_API_KEY="mlx-local" \
+            "${GPTME_CMD[@]}"
+        ;;
+    *)
+        echo "Unknown runner: $RUNNER"
+        echo "Available runners: claude, codex, gemini, aider, gptme"
+        exit 1
+        ;;
+esac

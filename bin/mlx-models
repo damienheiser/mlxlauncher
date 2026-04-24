@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# List locally available MLX chat/generation models in ~/.lmstudio/models
+# Embedding-only models (no lm_head) and GGUF models are excluded.
+set -euo pipefail
+
+MODELS_DIR="${HOME}/.lmstudio/models"
+
+is_chat_model() {
+    local dir="$1"
+    # Exclude GGUF models
+    ls "$dir"/*.gguf &>/dev/null && return 1
+    # Must have safetensors
+    ls "$dir"/*.safetensors &>/dev/null || ls "$dir"/model-*.safetensors &>/dev/null || return 1
+    # Check config.json for model type
+    local config="$dir/config.json"
+    if [[ -f "$config" ]]; then
+        # Embedding-only models (no lm_head and not a known chat architecture)
+        local model_type
+        model_type=$(python3 -c "import json; print(json.load(open('$config')).get('model_type',''))" 2>/dev/null || echo "")
+        # Known chat architectures that tie embeddings (no lm_head but can generate)
+        case "$model_type" in
+            gemma4*|gemma3*|gemma2*|glm4*) return 0 ;;
+        esac
+    fi
+    # Check for lm_head in weight index (embedding models lack it)
+    local index="$dir/model.safetensors.index.json"
+    if [[ -f "$index" ]]; then
+        grep -q "lm_head" "$index" || return 1
+    fi
+    return 0
+}
+
+echo "Available MLX chat models:"
+echo ""
+
+i=1
+while IFS= read -r dir; do
+    if is_chat_model "$dir"; then
+        model_id=$(echo "$dir" | sed "s|${MODELS_DIR}/||")
+        size=$(du -sh "$dir" 2>/dev/null | cut -f1 | xargs)
+        printf "  %2d) %-70s %s\n" "$i" "$model_id" "$size"
+        i=$((i + 1))
+    fi
+done < <(find "$MODELS_DIR" -mindepth 2 -maxdepth 2 -type d | sort)
+
+echo ""
+echo "Usage: mlx-serve <number>    (e.g. mlx-serve 1)"
+echo "       mlx-serve <org/model>"

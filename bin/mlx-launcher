@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Launch the MLX Launcher GUI app.
+set -euo pipefail
+
+APP="/Applications/MLX Launcher.app"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+if [[ -d "$APP" ]]; then
+    open "$APP"
+else
+    cd "$REPO_DIR/MLXLauncher"
+    exec swift run MLXLauncher
+fi
