@@ -4,4 +4,4 @@ venv/
 *.app
 .engrave/
 .DS_Store
-/tmp/
+bin/

@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-# Run Claude Code with a local MLX model via engrave protocol translation.
-# Usage: mlx-claude <model|index> [-- claude-args...]
-set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-[[ $# -lt 1 ]] && { echo "Usage: mlx-claude <model|index> [-- claude-args...]"; echo "Run 'mlx-models' to see available models."; exit 1; }
-MODEL="$1"; shift
-exec "$SCRIPT_DIR/mlx-run" --runner claude --model "$MODEL" -- "$@"

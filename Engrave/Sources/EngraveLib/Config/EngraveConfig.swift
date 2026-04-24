@@ -171,7 +171,8 @@ public struct EngraveConfig: Codable, Sendable {
         return EngraveConfig()
     }
 
-    /// Create a config for local MLX server proxying
+    /// Create a config for local MLX server proxying.
+    /// Uses "*" as the model name to passthrough whatever model the client requests.
     public static func forLocalMLX(
         model: String,
         backendPort: UInt16 = 1234,
@@ -181,10 +182,10 @@ public struct EngraveConfig: Codable, Sendable {
             server: ServerConfig(port: proxyPort),
             routes: RouteConfig(
                 defaults: [
-                    "anthropic": RouteTarget(backend: "local", model: model),
-                    "openai": RouteTarget(backend: "local", model: model),
-                    "openai_compatible": RouteTarget(backend: "local", model: model),
-                    "gemini": RouteTarget(backend: "local", model: model),
+                    "anthropic": RouteTarget(backend: "local", model: "*"),
+                    "openai": RouteTarget(backend: "local", model: "*"),
+                    "openai_compatible": RouteTarget(backend: "local", model: "*"),
+                    "gemini": RouteTarget(backend: "local", model: "*"),
                 ]
             ),
             providers: [

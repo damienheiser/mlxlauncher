@@ -40,10 +40,12 @@ public struct RouteResolver {
         // 2. Check default routes for this facade
         if let defaultRoute = config.routes.defaults[sourceProvider] {
             let providerName = defaultRoute.provider ?? defaultRoute.backend
+            // "*" means passthrough the original model name
+            let resolvedModel = defaultRoute.model == "*" ? model : defaultRoute.model
             return ResolvedRoute(
                 backend: defaultRoute.backend,
                 provider: providerName,
-                model: defaultRoute.model,
+                model: resolvedModel,
                 providerConfig: config.providers[providerName]
             )
         }

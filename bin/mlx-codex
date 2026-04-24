@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-# Run Codex CLI with a local MLX model (direct OpenAI-compatible connection).
-# Usage: mlx-codex <model|index> [-- codex-args...]
-set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-[[ $# -lt 1 ]] && { echo "Usage: mlx-codex <model|index> [-- codex-args...]"; echo "Run 'mlx-models' to see available models."; exit 1; }
-MODEL="$1"; shift
-exec "$SCRIPT_DIR/mlx-run" --runner codex --model "$MODEL" -- "$@"

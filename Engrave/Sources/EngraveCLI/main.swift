@@ -58,7 +58,7 @@ func startServer(args: [String]) {
         config.providers["local"] = EngraveConfig.ProviderConfig(
             type: "chat_completions", baseURL: backend
         )
-        let target = EngraveConfig.RouteTarget(backend: "local", model: "default")
+        let target = EngraveConfig.RouteTarget(backend: "local", model: "*")
         config.routes.defaults["anthropic"] = target
         config.routes.defaults["openai"] = target
         config.routes.defaults["openai_compatible"] = target
