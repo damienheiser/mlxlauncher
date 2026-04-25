@@ -38,7 +38,6 @@ class AppState: ObservableObject {
     let mlxBinDir: String
     let configDir: String
     let modelsDir: String
-    let venvDir: String
     let interposerPort: UInt16 = 8900
 
     init() {
@@ -46,7 +45,6 @@ class AppState: ObservableObject {
         mlxBinDir = "\(home)/mlx/bin"
         configDir = "\(home)/.config/mlx-launcher"
         modelsDir = "\(home)/.config/mlx-launcher/models"
-        venvDir = "\(home)/.config/mlx-launcher/venv"
         // Load non-blocking data synchronously
         runnerSettings = Dictionary(uniqueKeysWithValues: allRunners.map {
             ($0.id, RunnerLaunchSettings(workingDirectory: home, enabledFlags: [], values: [:], extraArguments: ""))
@@ -585,7 +583,7 @@ class AppState: ObservableObject {
         }
         let pathExport = "export PATH=\"\(mlxBinDir):/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.local/bin:\(NSHomeDirectory())/.cargo/bin:$PATH\""
         let waitForMLX = model.source == .local
-            ? "echo 'Waiting for MLX server on port \(serverStatus.port)...' && _t=0 && until curl -fsS \(shellQuote("http://localhost:\(serverStatus.port)/v1/models")) >/dev/null 2>&1; do sleep 1; _t=$((_t+1)); if [ $_t -ge 120 ]; then echo 'ERROR: MLX server failed to start after 120s'; exit 1; fi; done"
+            ? "echo 'Waiting for MLX inference on port \(serverStatus.port)...' && _t=0 && until curl -fsS \(shellQuote("http://127.0.0.1:\(serverStatus.port)/v1/models")) >/dev/null 2>&1; do sleep 1; _t=$((_t+1)); if [ $_t -ge 120 ]; then echo 'ERROR: MLX inference not ready after 120s'; exit 1; fi; done"
             : ""
         let waitForInterposer = usesInterposer
             ? "echo 'Waiting for interposer on port \(interposerPort)...' && _t=0 && until curl -fsS \(shellQuote("http://localhost:\(interposerPort)/health")) >/dev/null 2>&1; do sleep 1; _t=$((_t+1)); if [ $_t -ge 60 ]; then echo 'ERROR: Interposer failed to start after 60s'; exit 1; fi; done"
@@ -616,7 +614,7 @@ class AppState: ObservableObject {
         let modelId = model.source == .local ? (serverStatus.modelName ?? modelName) : modelName
         let usesInterposer = shouldUseInterposer(runner: runner, model: model)
         let nativeCloudAuth = model.isCloud && cloudAuthMode == .cliSubscription
-        let openAIBaseURL = usesInterposer ? "http://localhost:\(interposerPort)/v1" : "http://localhost:\(serverStatus.port)/v1"
+        let openAIBaseURL = usesInterposer ? "http://127.0.0.1:\(interposerPort)/v1" : "http://127.0.0.1:\(serverStatus.port)/v1"
 
         switch runner.id {
         case "claude":
