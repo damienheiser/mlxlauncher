@@ -39,9 +39,10 @@ tests.append(("Codex is configured for governed proxy", {
 
 tests.append(("Cloud models route through selected-model Engrave config", {
     try expect(services.contains("private func engraveConfig(for model: MLXModel) -> EngraveConfig"), "AppState must build Engrave config from selected model")
-    try expect(services.contains("case .anthropic:") && services.contains("backend: \"anthropic\", model: model.id"), "Anthropic cloud models must route to Anthropic backend")
-    try expect(services.contains("case .openai:") && services.contains("backend: \"openai\", model: model.id"), "OpenAI cloud models must route to OpenAI backend")
-    try expect(services.contains("case .google:") && services.contains("backend: \"gemini\", model: model.id"), "Google cloud models must route to Gemini backend")
+    try expect(services.contains("model: \"*\""), "Interposer must use wildcard model routing to avoid restarts")
+    try expect(services.contains("case .anthropic:") && services.contains("Anthropic"), "Anthropic cloud models must have target description")
+    try expect(services.contains("case .openai:") && services.contains("OpenAI"), "OpenAI cloud models must have target description")
+    try expect(services.contains("case .google:") && services.contains("Gemini"), "Google cloud models must have target description")
     try expect(services.contains("let modelId = model.source == .local ? (serverStatus.modelName ?? modelName) : modelName"), "Cloud/network commands must not inherit a running local model")
 }))
 

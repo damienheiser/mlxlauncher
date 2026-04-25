@@ -280,6 +280,19 @@ class AppState: ObservableObject {
 
         stopServer()
 
+        // Wait for the port to actually free before restarting
+        for _ in 0..<20 {
+            let check = Process()
+            check.executableURL = URL(fileURLWithPath: "/usr/bin/lsof")
+            check.arguments = ["-ti", ":\(serverStatus.port)"]
+            check.standardOutput = FileHandle.nullDevice
+            check.standardError = FileHandle.nullDevice
+            try? check.run()
+            check.waitUntilExit()
+            if check.terminationStatus != 0 { break } // port is free
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+
         serverStatus = ServerStatus(state: .starting, modelName: model.id, port: serverStatus.port)
         serverLog = ["Starting MLX server for \(model.id)..."]
 
@@ -542,74 +555,6 @@ class AppState: ObservableObject {
         }
     }
 
-    private func engraveConfig(for model: MLXModel) -> EngraveConfig {
-        let route = routeTarget(for: model)
-        return EngraveConfig(
-            server: EngraveConfig.ServerConfig(port: interposerPort),
-            routes: EngraveConfig.RouteConfig(defaults: [
-                "anthropic": route,
-                "openai": route,
-                "openai_compatible": route,
-                "gemini": route,
-            ]),
-            providers: [route.provider ?? route.backend: providerConfig(for: model)]
-        )
-    }
-
-    private func routeTarget(for model: MLXModel) -> EngraveConfig.RouteTarget {
-        switch model.source {
-        case .local, .network:
-            return EngraveConfig.RouteTarget(backend: "local", model: model.id, provider: "selected")
-        case .anthropic:
-            return EngraveConfig.RouteTarget(backend: "anthropic", model: model.id, provider: "selected")
-        case .openai:
-            return EngraveConfig.RouteTarget(backend: "openai", model: model.id, provider: "selected")
-        case .google:
-            return EngraveConfig.RouteTarget(backend: "gemini", model: model.id, provider: "selected")
-        }
-    }
-
-    private func providerConfig(for model: MLXModel) -> EngraveConfig.ProviderConfig {
-        switch model.source {
-        case .local:
-            return EngraveConfig.ProviderConfig(
-                type: "chat_completions",
-                baseURL: "http://localhost:\(serverStatus.port)",
-                apiKeyEnv: "MLX_LAUNCHER_API_KEY",
-                models: [model.id]
-            )
-        case .network:
-            let baseURL = "http://\(model.networkHost ?? "localhost"):\(model.networkPort ?? 1234)"
-            return EngraveConfig.ProviderConfig(
-                type: "chat_completions",
-                baseURL: baseURL,
-                apiKeyEnv: "MLX_LAUNCHER_API_KEY",
-                models: [model.id]
-            )
-        case .anthropic:
-            return EngraveConfig.ProviderConfig(
-                type: "anthropic",
-                baseURL: "https://api.anthropic.com",
-                apiKeyEnv: "ANTHROPIC_API_KEY",
-                models: [model.id]
-            )
-        case .openai:
-            return EngraveConfig.ProviderConfig(
-                type: "openai",
-                baseURL: "https://api.openai.com",
-                apiKeyEnv: "OPENAI_API_KEY",
-                models: [model.id]
-            )
-        case .google:
-            return EngraveConfig.ProviderConfig(
-                type: "gemini",
-                baseURL: "https://generativelanguage.googleapis.com",
-                apiKeyEnv: "GOOGLE_API_KEY",
-                models: [model.id]
-            )
-        }
-    }
-
     private func targetDescription(for model: MLXModel) -> String {
         switch model.source {
         case .local:
@@ -623,6 +568,30 @@ class AppState: ObservableObject {
         case .google:
             return "Gemini \(model.id)"
         }
+    }
+
+    private func engraveConfig(for model: MLXModel) -> EngraveConfig {
+        // Use wildcard "*" routes so the interposer forwards ANY model name
+        // without needing to restart when the selected model changes.
+        let localRoute = EngraveConfig.RouteTarget(backend: "local", model: "*", provider: "local")
+
+        return EngraveConfig(
+            server: EngraveConfig.ServerConfig(port: interposerPort),
+            routes: EngraveConfig.RouteConfig(defaults: [
+                "anthropic": localRoute,
+                "openai": localRoute,
+                "openai_compatible": localRoute,
+                "gemini": localRoute,
+            ]),
+            providers: [
+                "local": EngraveConfig.ProviderConfig(
+                    type: "chat_completions",
+                    baseURL: "http://localhost:\(serverStatus.port)",
+                    apiKeyEnv: "MLX_LAUNCHER_API_KEY",
+                    models: nil
+                ),
+            ]
+        )
     }
 
     func stopInterposer() {
@@ -800,13 +769,18 @@ class AppState: ObservableObject {
         let command = runnerCommand(model: model, runner: runner, userArgs: userArgs)
         let usesInterposer = shouldUseInterposer(runner: runner, model: model)
 
+        // Only start/restart the MLX server if needed for a local model
         if model.source == .local {
             if serverStatus.state != .running || runningServerDoesNotMatch(model) {
                 startServer(model: model)
             }
         }
-        if usesInterposer {
+        // Only start the interposer if it's not already running
+        if usesInterposer && !interposerRunning {
             startInterposer()
+        } else if usesInterposer && interposerRunning {
+            // Update the interposer config for the new model without restarting
+            interposerTarget = targetDescription(for: model)
         }
 
         let environment = command.environment.merging(governanceRunnerEnvironment()) { current, _ in current }
@@ -906,7 +880,7 @@ class AppState: ObservableObject {
                 gptmeEnv["OPENAI_API_BASE"] = openAIBaseURL
                 gptmeEnv["OPENAI_API_KEY"] = "mlx-local"
             }
-            var gptmeArgs = ["gptme", "--non-interactive"] + defaultModelArgs(userArgs, flag: "--model", model: modelName) + userArgs
+            let gptmeArgs = ["gptme", "--non-interactive"] + defaultModelArgs(userArgs, flag: "--model", model: modelName) + userArgs
             return (gptmeEnv, gptmeArgs)
         default:
             return ([:], [runner.binary] + userArgs)
@@ -1130,7 +1104,15 @@ class AppState: ObservableObject {
 
     private func runningServerDoesNotMatch(_ model: MLXModel) -> Bool {
         guard let running = serverStatus.modelName else { return true }
+        // The MLX server reports the full local path as the model ID.
+        // Compare against both the model ID and its local path.
+        let path = modelPath(for: model)
+        let normalizedRunning = running.replacingOccurrences(of: "--", with: "/")
+        let normalizedId = model.id.replacingOccurrences(of: "--", with: "/")
         return !running.contains(model.id)
+            && !running.contains(path)
+            && !path.contains(running)
+            && !normalizedRunning.contains(normalizedId)
     }
 
     private func defaultModelArgs(_ userArgs: [String], flag: String, model: String) -> [String] {
