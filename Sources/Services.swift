@@ -92,10 +92,9 @@ class AppState: ObservableObject {
     // MARK: - Log Tailing (periodic, survives app relaunch)
 
     private func startLogTailing() {
-        logTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        logTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.tailServerLog()
-                self?.checkServer()
             }
         }
     }
