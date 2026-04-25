@@ -822,7 +822,9 @@ class AppState: ObservableObject {
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        task.arguments = ["-a", "Terminal", scriptPath]
+        // Prefer iTerm2 if installed, fall back to Terminal.app
+        let terminalApp = FileManager.default.fileExists(atPath: "/Applications/iTerm.app") ? "iTerm" : "Terminal"
+        task.arguments = ["-a", terminalApp, scriptPath]
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
         try? task.run()
