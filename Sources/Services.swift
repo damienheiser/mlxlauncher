@@ -86,10 +86,17 @@ class AppState: ObservableObject {
     }
 
     private func tailServerLog() {
-        guard let data = FileManager.default.contents(atPath: "/tmp/mlx-server.log"),
-              let text = String(data: data, encoding: .utf8) else { return }
-        let lines = text.components(separatedBy: "\n").filter { !$0.isEmpty }
-        serverLog = Array(lines.suffix(200))
+        // Native MLX inference logs directly to serverLog — no file tailing needed.
+        // Update inference status if model is loaded.
+        if inference.isLoaded && serverStatus.state != .running {
+            serverStatus.state = .running
+        }
+        if inference.tokensPerSecond > 0 {
+            let tps = String(format: "%.1f", inference.tokensPerSecond)
+            if serverLog.last?.hasPrefix("[tps:") != true {
+                serverLog.append("[tps: \(tps) tokens/sec]")
+            }
+        }
     }
 
     // MARK: - Model Discovery
