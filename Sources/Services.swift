@@ -644,18 +644,22 @@ class AppState: ObservableObject {
             return (claudeEnv, ["claude"] + args)
         case "codex":
             let codexEnv: [String: String] = nativeCloudAuth ? [:] : [
-                "OPENAI_BASE_URL": "http://localhost:\(interposerPort)/v1",
+                "OPENAI_BASE_URL": "http://127.0.0.1:\(interposerPort)/v1",
                 "OPENAI_API_KEY": "mlx-local",
             ]
             let codexArgs = nativeCloudAuth
                 ? defaultModelArgs(userArgs, flag: "-m", model: modelId) + userArgs
                 : defaultCodexArgs(userArgs, model: modelId) + userArgs
-            // "exec" subcommand is required per AgentInterposer spec
-            return (codexEnv, ["codex", "exec"] + codexArgs)
+            // Interactive launch: no "exec" subcommand (exec requires a prompt argument).
+            // Sub-agent launches use "exec" — that's handled in the governance sub-agent instructions.
+            return (codexEnv, ["codex"] + codexArgs)
         case "gemini":
-            let geminiArgs = defaultGeminiArgs(userArgs, model: modelName) + userArgs
+            // Don't pass local model names to Gemini — it validates against Google's registry.
+            // Use "gemini-2.0-flash" as a placeholder; the interposer routes to local MLX anyway.
+            let geminiModel = model.source == .local ? "gemini-2.0-flash" : modelName
+            let geminiArgs = defaultGeminiArgs(userArgs, model: geminiModel) + userArgs
             let geminiEnv: [String: String] = nativeCloudAuth ? [:] : [
-                "GOOGLE_GEMINI_BASE_URL": "http://localhost:\(interposerPort)",
+                "GOOGLE_GEMINI_BASE_URL": "http://127.0.0.1:\(interposerPort)",
                 "GEMINI_API_KEY": "mlx-local",
                 "GOOGLE_API_KEY": "mlx-local",
             ]
