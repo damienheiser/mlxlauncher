@@ -54,6 +54,17 @@ class WebServer {
         let (method, path) = parseRequestLine(raw)
         let body = extractBody(raw)
 
+        // OpenAI-compatible routes handle their own response writing (for streaming)
+        if path.hasPrefix("/v1/") {
+            handleOpenAI(fd: fd, method: method, path: path, body: body)
+            return
+        }
+
+        if path == "/health" {
+            sendRawResponse(fd: fd, status: 200, contentType: "application/json", body: #"{"status":"ok"}"#)
+            return
+        }
+
         let response: (Int, String, String) // (status, contentType, body)
 
         if path == "/" || path == "/index.html" {
@@ -131,6 +142,7 @@ class WebServer {
         case 204: return "No Content"
         case 400: return "Bad Request"
         case 404: return "Not Found"
+        case 500: return "Internal Server Error"
         default: return "Error"
         }
     }
@@ -305,5 +317,124 @@ class WebServer {
         guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]),
               let str = String(data: data, encoding: .utf8) else { return "[]" }
         return str
+    }
+
+    // MARK: - OpenAI-Compatible Routes
+
+    private func handleOpenAI(fd: Int32, method: String, path: String, body: String) {
+        let ct = "application/json"
+
+        if method == "OPTIONS" {
+            sendRawResponse(fd: fd, status: 200, contentType: ct, body: "{}")
+            return
+        }
+
+        switch (method, path) {
+        case ("GET", "/v1/models"):
+            var result: [String: Any] = [:]
+            DispatchQueue.main.sync {
+                result = self.appState.inference.modelListJSON()
+            }
+            sendRawResponse(fd: fd, status: 200, contentType: ct, body: jsonEncode(result))
+
+        case ("POST", "/v1/chat/completions"):
+            guard let data = body.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                sendRawResponse(fd: fd, status: 400, contentType: ct, body: #"{"error":"invalid JSON body"}"#)
+                return
+            }
+
+            let wantStream = json["stream"] as? Bool ?? false
+
+            if wantStream {
+                handleStreamingCompletion(fd: fd, body: json)
+            } else {
+                handleNonStreamingCompletion(fd: fd, body: json)
+            }
+
+        default:
+            sendRawResponse(fd: fd, status: 404, contentType: ct, body: #"{"error":"unknown endpoint"}"#)
+        }
+    }
+
+    private func handleStreamingCompletion(fd: Int32, body: [String: Any]) {
+        // Send SSE headers immediately
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n\r\n"
+        sendRawBytes(fd: fd, string: headers)
+
+        let sem = DispatchSemaphore(value: 0)
+        var streamError: Error?
+
+        // Get the stream on the main actor, then iterate it
+        // MLXInference is @MainActor so we need to hop to main to call methods
+        var stream: AsyncThrowingStream<String, Error>?
+        DispatchQueue.main.sync {
+            stream = self.appState.inference.handleChatCompletionsRequest(body)
+        }
+
+        guard let stream else {
+            sendRawBytes(fd: fd, string: "data: {\"error\":\"failed to create stream\"}\n\n")
+            close(fd)
+            return
+        }
+
+        Task {
+            do {
+                for try await line in stream {
+                    self.sendRawBytes(fd: fd, string: line)
+                }
+            } catch {
+                streamError = error
+            }
+            sem.signal()
+        }
+
+        sem.wait()
+
+        if let error = streamError {
+            let errMsg = "data: {\"error\":\"\(error.localizedDescription)\"}\n\n"
+            sendRawBytes(fd: fd, string: errMsg)
+        }
+
+        close(fd)
+    }
+
+    private func handleNonStreamingCompletion(fd: Int32, body: [String: Any]) {
+        let sem = DispatchSemaphore(value: 0)
+        var result: [String: Any]?
+        var completionError: Error?
+
+        Task { @MainActor in
+            do {
+                result = try await self.appState.inference.handleChatCompletionsRequestNonStreaming(body)
+            } catch {
+                completionError = error
+            }
+            sem.signal()
+        }
+
+        sem.wait()
+
+        if let error = completionError {
+            let errBody = jsonEncode(["error": ["message": error.localizedDescription, "type": "server_error"]])
+            sendRawResponse(fd: fd, status: 500, contentType: "application/json", body: errBody)
+        } else if let result {
+            sendRawResponse(fd: fd, status: 200, contentType: "application/json", body: jsonEncode(result))
+        } else {
+            sendRawResponse(fd: fd, status: 500, contentType: "application/json", body: #"{"error":{"message":"unknown error","type":"server_error"}}"#)
+        }
+    }
+
+    private func sendRawBytes(fd: Int32, string: String) {
+        let bytes = Array(string.utf8)
+        bytes.withUnsafeBufferPointer { buf in
+            guard let base = buf.baseAddress else { return }
+            var sent = 0
+            while sent < bytes.count {
+                let n = send(fd, base + sent, bytes.count - sent, 0)
+                if n <= 0 { break }
+                sent += n
+            }
+        }
     }
 }

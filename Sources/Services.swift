@@ -11,10 +11,11 @@ class AppState: ObservableObject {
     @Published var allModels: [MLXModel] = []
     @Published var selectedModel: MLXModel?
     @Published var selectedRunner: Runner = allRunners[0]
-    @Published var serverStatus = ServerStatus(state: .stopped, port: 1234)
+    @Published var serverStatus = ServerStatus(state: .stopped, port: 8421)
     @Published var profiles: [GenerationProfile] = []
     @Published var activeProfile: GenerationProfile = .default
     @Published var prompts: [SystemPrompt] = []
+    @Published var inference = MLXInference()
     @Published var serverLog: [String] = []
     @Published var interposerLog: [String] = []
     @Published var interposerRunning = false
@@ -29,7 +30,6 @@ class AppState: ObservableObject {
 
     private var logTimer: Timer?
     private var interposer: Engrave?
-    private var mlxServerProcess: Process?
     private var logStreamTask: Task<Void, Never>?
     private var policyEngine: PolicyEngine?
     private var governanceBridge: GovernanceBridge?
@@ -39,10 +39,7 @@ class AppState: ObservableObject {
     let configDir: String
     let modelsDir: String
     let venvDir: String
-    let modelConfigFile: String
     let interposerPort: UInt16 = 8900
-
-    private var pidFilePath: String { "\(configDir)/mlx-server.pid" }
 
     init() {
         let home = NSHomeDirectory()
@@ -50,8 +47,6 @@ class AppState: ObservableObject {
         configDir = "\(home)/.config/mlx-launcher"
         modelsDir = "\(home)/.config/mlx-launcher/models"
         venvDir = "\(home)/.config/mlx-launcher/venv"
-        modelConfigFile = "\(home)/.config/mlx-launcher/model-configs.json"
-
         // Load non-blocking data synchronously
         runnerSettings = Dictionary(uniqueKeysWithValues: allRunners.map {
             ($0.id, RunnerLaunchSettings(workingDirectory: home, enabledFlags: [], values: [:], extraArguments: ""))
@@ -70,13 +65,6 @@ class AppState: ObservableObject {
         _bootstrapped = true
 
         Task {
-            // Ensure dependencies are available (runs pip install if needed)
-            let pythonPath = findPython3()
-            let logs = await Task.detached(priority: .utility) {
-                Self.checkAndInstallMLX(python: pythonPath)
-            }.value
-            for log in logs { serverLog.append(log) }
-
             refreshModels()
             connectModelStore()
             checkServer()
@@ -223,44 +211,15 @@ class AppState: ObservableObject {
     // MARK: - Server Control
 
     func checkServer() {
-        Task {
-            let url = URL(string: "http://localhost:\(serverStatus.port)/v1/models")!
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let models = json["data"] as? [[String: Any]],
-                       let modelId = models.first?["id"] as? String {
-                        // Recover PID from file if we don't have one (server survived app restart)
-                        let pid = serverStatus.pid ?? readSavedPID()
-                        serverStatus = ServerStatus(state: .running, modelName: modelId, port: serverStatus.port, pid: pid)
-                    } else {
-                        serverStatus.state = .running
-                    }
-                } else {
-                    serverStatus.state = .stopped
-                }
-            } catch {
-                serverStatus.state = .stopped
-            }
+        if inference.isLoaded {
+            serverStatus = ServerStatus(state: .running, modelName: inference.loadedModelName, port: serverStatus.port)
+        } else if inference.isLoading {
+            serverStatus = ServerStatus(state: .starting, modelName: inference.loadedModelName, port: serverStatus.port)
+        } else if inference.loadError != nil {
+            serverStatus = ServerStatus(state: .error, modelName: nil, port: serverStatus.port)
+        } else {
+            serverStatus = ServerStatus(state: .stopped, port: serverStatus.port)
         }
-    }
-
-    private func readSavedPID() -> Int? {
-        guard let str = try? String(contentsOfFile: pidFilePath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
-              let pid = Int(str) else { return nil }
-        // Verify the process is still alive
-        if kill(Int32(pid), 0) == 0 { return pid }
-        return nil
-    }
-
-    private func savePID(_ pid: Int) {
-        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
-        try? String(pid).write(toFile: pidFilePath, atomically: true, encoding: .utf8)
-    }
-
-    private func clearPID() {
-        try? FileManager.default.removeItem(atPath: pidFilePath)
     }
 
     func startServer(model: MLXModel) {
@@ -279,101 +238,32 @@ class AppState: ObservableObject {
 
         stopServer()
 
-        // Wait for the port to actually free before restarting
-        for _ in 0..<20 {
-            let check = Process()
-            check.executableURL = URL(fileURLWithPath: "/usr/bin/lsof")
-            check.arguments = ["-ti", ":\(serverStatus.port)"]
-            check.standardOutput = FileHandle.nullDevice
-            check.standardError = FileHandle.nullDevice
-            try? check.run()
-            check.waitUntilExit()
-            if check.terminationStatus != 0 { break } // port is free
-            Thread.sleep(forTimeInterval: 0.5)
-        }
-
         serverStatus = ServerStatus(state: .starting, modelName: model.id, port: serverStatus.port)
-        serverLog = ["Starting MLX server for \(model.id)..."]
+        serverLog = ["Loading model \(model.id) via native MLX inference..."]
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: findPython3())
-        proc.arguments = serverStartArguments(model: model, profile: activeProfile)
-        proc.environment = ProcessInfo.processInfo.environment
-        let logURL = URL(fileURLWithPath: "/tmp/mlx-server.log")
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        let logHandle = try? FileHandle(forWritingTo: logURL)
-        try? logHandle?.truncate(atOffset: 0)
-        proc.standardOutput = logHandle ?? FileHandle.nullDevice
-        proc.standardError = logHandle ?? FileHandle.nullDevice
-
-        do {
-            try proc.run()
-            mlxServerProcess = proc
-        } catch {
-            serverStatus.state = .error
-            serverLog.append("Failed to start: \(error)")
-            return
-        }
-
-        serverLog.append("Server process launched. PID: \(proc.processIdentifier)")
-
-        // Poll for readiness and discover the PID
         Task {
-            for _ in 0..<60 {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await inference.loadModel(at: path)
 
-                // Tail the log file for UI feedback
-                if let logData = FileManager.default.contents(atPath: "/tmp/mlx-server.log"),
-                   let logText = String(data: logData, encoding: .utf8) {
-                    let lines = logText.components(separatedBy: "\n").filter { !$0.isEmpty }
-                    serverLog = ["Starting MLX server for \(model.id)..."] + lines.suffix(50)
-                }
-
-                let url = URL(string: "http://localhost:\(serverStatus.port)/v1/models")!
-                if let (_, resp) = try? await URLSession.shared.data(from: url),
-                   let http = resp as? HTTPURLResponse, http.statusCode == 200 {
-                    let pid = Int(proc.processIdentifier)
-                    serverStatus = ServerStatus(state: .running, modelName: model.id, port: serverStatus.port, pid: pid)
-                    serverLog.append("Server ready. PID: \(pid)")
-                    self.savePID(pid)
-                    return
-                }
+            if inference.isLoaded {
+                serverStatus = ServerStatus(state: .running, modelName: model.id, port: serverStatus.port)
+                serverLog.append("Model loaded successfully: \(model.id)")
+            } else if let error = inference.loadError {
+                serverStatus = ServerStatus(state: .error, modelName: model.id, port: serverStatus.port)
+                serverLog.append("Failed to load model: \(error)")
             }
-            serverStatus.state = .error
-            serverLog.append("Server failed to become ready within 120s")
         }
     }
 
     func stopServer() {
-        if let proc = mlxServerProcess, proc.isRunning {
-            proc.terminate()
-            // Don't block main thread — let it die in background
-            let p = proc
-            Task.detached { p.waitUntilExit() }
-        } else if let pid = serverStatus.pid {
-            let killTask = Process()
-            killTask.executableURL = URL(fileURLWithPath: "/bin/kill")
-            killTask.arguments = [String(pid)]
-            killTask.standardOutput = FileHandle.nullDevice
-            killTask.standardError = FileHandle.nullDevice
-            try? killTask.run()
-            let k = killTask
-            Task.detached { k.waitUntilExit() }
-        }
-        mlxServerProcess = nil
-
+        inference.unload()
         serverStatus = ServerStatus(state: .stopped, port: serverStatus.port)
         serverLog.append("Server stopped.")
-        clearPID()
     }
 
     func restartServer() {
         guard let model = selectedModel, model.source == .local else { return }
-        stopServer()
-        Task {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            self.startServer(model: model)
-        }
+        inference.unload()
+        startServer(model: model)
     }
 
     /// Whether the selected model differs from the running server model.
@@ -386,116 +276,8 @@ class AppState: ObservableObject {
     /// Relaunch the MLX server with the currently selected model.
     func relaunchServerWithSelectedModel() {
         guard let model = selectedModel, model.source == .local else { return }
-        stopServer()
-        Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            self.startServer(model: model)
-        }
-    }
-
-    private func serverStartArguments(model: MLXModel, profile: GenerationProfile) -> [String] {
-        var args = [
-            "-m", "mlx_lm", "server",
-            "--model", modelPath(for: model),
-            "--port", String(serverStatus.port),
-        ]
-        args.append(contentsOf: serverParameterArguments(model: model, profile: profile))
-        args.append(contentsOf: splitShellWords(extraMLXServerArguments))
-        return args
-    }
-
-    private func serverParameterArguments(model: MLXModel, profile: GenerationProfile) -> [String] {
-        let config = resolvedModelConfig(for: model, profile: profile)
-        var args: [String] = []
-
-        appendArg(&args, config: config, key: "temp", flag: "--temp", fallback: profile.temp)
-        appendArg(&args, config: config, key: "top_p", flag: "--top-p", fallback: profile.top_p)
-        appendArg(&args, config: config, key: "top_k", flag: "--top-k", fallback: profile.top_k)
-        appendArg(&args, config: config, key: "min_p", flag: "--min-p", fallback: profile.min_p)
-        appendArg(&args, config: config, key: "max_tokens", flag: "--max-tokens", fallback: profile.max_tokens)
-
-        if boolValue(config["use_default_chat_template"]) == true {
-            args.append("--use-default-chat-template")
-        }
-        if let templateArgs = config["chat_template_args"] as? String, !templateArgs.isEmpty {
-            args += ["--chat-template-args", templateArgs]
-        }
-        return args
-    }
-
-    private func appendArg<T>(_ args: inout [String], config: [String: Any], key: String, flag: String, fallback: T) {
-        let value = config[key] ?? fallback
-        args += [flag, "\(value)"]
-    }
-
-    private func resolvedModelConfig(for model: MLXModel, profile: GenerationProfile) -> [String: Any] {
-        guard let data = FileManager.default.contents(atPath: modelConfigFile),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return [:]
-        }
-
-        let profileKey = normalizedProfileName(profile.name)
-        let arch = modelArchitecture(for: model)
-        var merged: [String: Any] = [:]
-
-        if let architectures = root["architectures"] as? [String: Any],
-           let defaultConfig = architectures["_default"] as? [String: Any] {
-            mergeConfig(defaultConfig, profileKey: profileKey, into: &merged)
-        }
-        if let arch,
-           let architectures = root["architectures"] as? [String: Any],
-           let archConfig = architectures[arch] as? [String: Any] {
-            mergeConfig(archConfig, profileKey: profileKey, into: &merged)
-        }
-        if let models = root["models"] as? [String: Any],
-           let modelConfig = models[model.id] as? [String: Any] {
-            mergeConfig(modelConfig, profileKey: profileKey, into: &merged)
-        }
-
-        return merged
-    }
-
-    private func mergeConfig(_ config: [String: Any], profileKey: String, into merged: inout [String: Any]) {
-        for (key, value) in config where !key.hasPrefix("_") && key != "profiles" {
-            merged[key] = value
-        }
-        guard let profiles = config["profiles"] as? [String: Any] else { return }
-        let aliases = profileAliases(for: profileKey)
-        for alias in aliases {
-            if let profileConfig = profiles[alias] as? [String: Any] {
-                for (key, value) in profileConfig where !key.hasPrefix("_") {
-                    merged[key] = value
-                }
-            }
-        }
-    }
-
-    private func modelArchitecture(for model: MLXModel) -> String? {
-        let path = "\(modelPath(for: model))/config.json"
-        guard let data = FileManager.default.contents(atPath: path),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        return json["model_type"] as? String
-    }
-
-    private func normalizedProfileName(_ name: String) -> String {
-        name.lowercased().replacingOccurrences(of: " ", with: "_")
-    }
-
-    private func profileAliases(for key: String) -> [String] {
-        switch key {
-        case "precise": return ["reasoning", "precise"]
-        case "coding": return ["agent", "coding"]
-        default: return [key]
-        }
-    }
-
-    private func boolValue(_ value: Any?) -> Bool? {
-        if let bool = value as? Bool { return bool }
-        if let int = value as? Int { return int != 0 }
-        if let string = value as? String { return ["true", "yes", "1"].contains(string.lowercased()) }
-        return nil
+        inference.unload()
+        startServer(model: model)
     }
 
     // MARK: - Interposer (Engrave) Control — In-Process
@@ -604,7 +386,7 @@ class AppState: ObservableObject {
             providers: [
                 "local": EngraveConfig.ProviderConfig(
                     type: "chat_completions",
-                    baseURL: "http://127.0.0.1:\(serverStatus.port)",
+                    baseURL: "http://127.0.0.1:8421",
                     apiKeyEnv: "MLX_LAUNCHER_API_KEY",
                     models: nil
                 ),
@@ -1222,196 +1004,6 @@ class AppState: ObservableObject {
 
     private func shellQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
-    }
-
-    private func findPython3() -> String {
-        // Require modern Python (3.12+) for mlx compatibility.
-        // System python on macOS is 3.9 which cannot run modern mlx/mlx-lm.
-        // Prefer homebrew python which ships 3.14+.
-        let candidates = [
-            "\(venvDir)/bin/python3",
-            "/opt/homebrew/bin/python3",
-            "/usr/local/bin/python3",
-            "\(NSHomeDirectory())/.local/bin/python3",
-        ]
-        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
-            // Verify it's 3.12+
-            if Self.pythonVersionOK(path) {
-                return path
-            }
-        }
-        // Never fall back to /usr/bin/python3 — it's 3.9 on macOS and can't run mlx
-        return "/opt/homebrew/bin/python3"
-    }
-
-    /// Returns true if the python at `path` is version 3.12 or newer.
-    nonisolated private static func pythonVersionOK(_ path: String) -> Bool {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: path)
-        proc.arguments = ["-c", "import sys; exit(0 if sys.version_info >= (3, 12) else 1)"]
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            return proc.terminationStatus == 0
-        } catch {
-            return false
-        }
-    }
-
-    /// Ensure Python 3.12+ and mlx-lm are available. Installs via Homebrew if needed.
-    /// Runs entirely off the main thread.
-    nonisolated static func checkAndInstallMLX(python: String) -> [String] {
-        var logs: [String] = []
-
-        // Step 1: Ensure we have a modern Python
-        let pythonPath: String
-        if FileManager.default.isExecutableFile(atPath: python) && pythonVersionOK(python) {
-            pythonPath = python
-            logs.append("Python OK: \(python)")
-        } else {
-            logs.append("Modern Python (3.12+) not found at \(python). Installing via Homebrew...")
-            pythonPath = installPythonViaHomebrew(&logs)
-            guard !pythonPath.isEmpty else { return logs }
-        }
-
-        // Step 2: Get version info
-        let verProc = Process()
-        verProc.executableURL = URL(fileURLWithPath: pythonPath)
-        verProc.arguments = ["--version"]
-        let verPipe = Pipe()
-        verProc.standardOutput = verPipe
-        verProc.standardError = verPipe
-        if let _ = try? verProc.run() {
-            verProc.waitUntilExit()
-            let ver = String(data: verPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
-            logs.append("Using: \(ver) at \(pythonPath)")
-        }
-
-        // Step 3: Check if mlx and mlx-lm are importable
-        let check = Process()
-        check.executableURL = URL(fileURLWithPath: pythonPath)
-        check.arguments = ["-c", "import mlx_lm; print('mlx-lm', mlx_lm.__version__)"]
-        let checkPipe = Pipe()
-        check.standardOutput = checkPipe
-        check.standardError = FileHandle.nullDevice
-        do {
-            try check.run()
-            check.waitUntilExit()
-            if check.terminationStatus == 0 {
-                let ver = String(data: checkPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                logs.append("mlx-lm available: \(ver)")
-
-                // Step 3b: Upgrade mlx/mlx-lm in the background so latest model architectures are supported
-                let upgrade = Process()
-                upgrade.executableURL = URL(fileURLWithPath: pythonPath)
-                upgrade.arguments = ["-m", "pip", "install", "--break-system-packages", "--upgrade", "mlx-lm"]
-                upgrade.standardOutput = FileHandle.nullDevice
-                upgrade.standardError = FileHandle.nullDevice
-                if let _ = try? upgrade.run() {
-                    upgrade.waitUntilExit()
-                    if upgrade.terminationStatus == 0 {
-                        // Re-check version after upgrade
-                        let recheck = Process()
-                        recheck.executableURL = URL(fileURLWithPath: pythonPath)
-                        recheck.arguments = ["-c", "import mlx_lm; print('mlx-lm', mlx_lm.__version__)"]
-                        let recheckPipe = Pipe()
-                        recheck.standardOutput = recheckPipe
-                        recheck.standardError = FileHandle.nullDevice
-                        if let _ = try? recheck.run() {
-                            recheck.waitUntilExit()
-                            let newVer = String(data: recheckPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                            if newVer != ver {
-                                logs.append("mlx-lm upgraded: \(newVer)")
-                            }
-                        }
-                    }
-                }
-                return logs
-            }
-        } catch {}
-
-        // Step 4: Install mlx-lm (which pulls in mlx as dependency)
-        logs.append("mlx-lm not found. Installing mlx-lm via pip...")
-        let install = Process()
-        install.executableURL = URL(fileURLWithPath: pythonPath)
-        install.arguments = ["-m", "pip", "install", "--break-system-packages", "--upgrade", "mlx-lm"]
-        let installPipe = Pipe()
-        install.standardOutput = installPipe
-        install.standardError = installPipe
-        do {
-            try install.run()
-            install.waitUntilExit()
-            if install.terminationStatus == 0 {
-                logs.append("mlx-lm installed successfully.")
-            } else {
-                let output = String(data: installPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                logs.append("pip install failed: \(String(output.prefix(500)))")
-                logs.append("Trying Homebrew formula instead...")
-                // Fallback: try homebrew's mlx package
-                let brewInstall = Process()
-                brewInstall.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/brew")
-                brewInstall.arguments = ["install", "mlx"]
-                brewInstall.standardOutput = FileHandle.nullDevice
-                brewInstall.standardError = FileHandle.nullDevice
-                if let _ = try? brewInstall.run() {
-                    brewInstall.waitUntilExit()
-                    logs.append(brewInstall.terminationStatus == 0 ? "mlx installed via Homebrew." : "Homebrew mlx install failed.")
-                }
-            }
-        } catch {
-            logs.append("Failed to run pip: \(error)")
-        }
-        return logs
-    }
-
-    /// Install Python via Homebrew. Returns path to installed python3 or empty string on failure.
-    nonisolated private static func installPythonViaHomebrew(_ logs: inout [String]) -> String {
-        let brewPath = "/opt/homebrew/bin/brew"
-        guard FileManager.default.isExecutableFile(atPath: brewPath) else {
-            logs.append("ERROR: Homebrew not found at \(brewPath). Install Homebrew first: https://brew.sh")
-            return ""
-        }
-
-        // Check if python is already installed via brew but just not linked
-        let pythonPath = "/opt/homebrew/bin/python3"
-        if FileManager.default.isExecutableFile(atPath: pythonPath) && pythonVersionOK(pythonPath) {
-            logs.append("Homebrew Python already available at \(pythonPath)")
-            return pythonPath
-        }
-
-        logs.append("Installing Python via Homebrew...")
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: brewPath)
-        proc.arguments = ["install", "python@3"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = pipe
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            if proc.terminationStatus == 0 {
-                logs.append("Python installed via Homebrew.")
-                if FileManager.default.isExecutableFile(atPath: pythonPath) {
-                    return pythonPath
-                }
-                // Try versioned path
-                let versioned = "/opt/homebrew/bin/python3.14"
-                if FileManager.default.isExecutableFile(atPath: versioned) {
-                    return versioned
-                }
-                logs.append("WARNING: brew install succeeded but python3 not found at expected path")
-                return ""
-            } else {
-                let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                logs.append("Homebrew python install failed: \(String(output.prefix(500)))")
-                return ""
-            }
-        } catch {
-            logs.append("Failed to run brew: \(error)")
-            return ""
-        }
     }
 
     private func splitShellWords(_ input: String) -> [String] {
