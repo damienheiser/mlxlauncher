@@ -42,6 +42,8 @@ class AppState: ObservableObject {
     let modelConfigFile: String
     let interposerPort: UInt16 = 8900
 
+    private var pidFilePath: String { "\(configDir)/mlx-server.pid" }
+
     init() {
         let home = NSHomeDirectory()
         mlxBinDir = "\(home)/mlx/bin"
@@ -230,7 +232,9 @@ class AppState: ObservableObject {
                     if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                        let models = json["data"] as? [[String: Any]],
                        let modelId = models.first?["id"] as? String {
-                        serverStatus = ServerStatus(state: .running, modelName: modelId, port: serverStatus.port)
+                        // Recover PID from file if we don't have one (server survived app restart)
+                        let pid = serverStatus.pid ?? readSavedPID()
+                        serverStatus = ServerStatus(state: .running, modelName: modelId, port: serverStatus.port, pid: pid)
                     } else {
                         serverStatus.state = .running
                     }
@@ -243,8 +247,37 @@ class AppState: ObservableObject {
         }
     }
 
+    private func readSavedPID() -> Int? {
+        guard let str = try? String(contentsOfFile: pidFilePath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+              let pid = Int(str) else { return nil }
+        // Verify the process is still alive
+        if kill(Int32(pid), 0) == 0 { return pid }
+        return nil
+    }
+
+    private func savePID(_ pid: Int) {
+        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
+        try? String(pid).write(toFile: pidFilePath, atomically: true, encoding: .utf8)
+    }
+
+    private func clearPID() {
+        try? FileManager.default.removeItem(atPath: pidFilePath)
+    }
+
     func startServer(model: MLXModel) {
         guard model.source == .local else { return }
+
+        // Validate model has weight files before starting
+        let path = modelPath(for: model)
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
+        let hasWeights = files.contains { $0.hasSuffix(".safetensors") || $0.hasSuffix(".gguf") }
+        if !hasWeights {
+            serverStatus = ServerStatus(state: .error, modelName: model.id, port: serverStatus.port)
+            serverLog.append("ERROR: No safetensors/gguf weight files found in \(path)")
+            serverLog.append("The model may be an incomplete download. Re-download it from the Model Store.")
+            return
+        }
+
         stopServer()
 
         serverStatus = ServerStatus(state: .starting, modelName: model.id, port: serverStatus.port)
@@ -290,6 +323,7 @@ class AppState: ObservableObject {
                     let pid = Int(proc.processIdentifier)
                     serverStatus = ServerStatus(state: .running, modelName: model.id, port: serverStatus.port, pid: pid)
                     serverLog.append("Server ready. PID: \(pid)")
+                    self.savePID(pid)
                     return
                 }
             }
@@ -318,6 +352,7 @@ class AppState: ObservableObject {
 
         serverStatus = ServerStatus(state: .stopped, port: serverStatus.port)
         serverLog.append("Server stopped.")
+        clearPID()
     }
 
     func restartServer() {
@@ -848,22 +883,30 @@ class AppState: ObservableObject {
             ]
             return (geminiEnv, ["gemini"] + geminiArgs)
         case "aider":
-            if nativeCloudAuth {
-                // Aider with native API key from env — no base URL override
-                return ([:], ["aider", "--model", "openai/\(modelId)"] + userArgs)
+            var aiderEnv: [String: String] = [:]
+            if !nativeCloudAuth {
+                // Use OPENAI_API_BASE (legacy v0 env var that Aider expects)
+                aiderEnv["OPENAI_API_BASE"] = openAIBaseURL
+                aiderEnv["OPENAI_API_KEY"] = "mlx-local"
+                // Also set Anthropic base so Aider can route anthropic-prefixed models
+                aiderEnv["ANTHROPIC_BASE_URL"] = "http://localhost:\(interposerPort)"
+                aiderEnv["ANTHROPIC_API_KEY"] = "mlx-local"
             }
-            return ([:], [
-                "aider",
-                "--openai-api-base", openAIBaseURL,
-                "--openai-api-key", "mlx-local",
-                "--model", "openai/\(modelId)",
-            ] + userArgs)
+            var aiderArgs = ["aider", "--yes-always", "--no-auto-commits"]
+            if !hasFlag(userArgs, "--model") {
+                aiderArgs += ["--model", "openai/\(modelId)"]
+            }
+            aiderArgs += userArgs
+            return (aiderEnv, aiderArgs)
         case "gptme":
-            let gptmeEnv: [String: String] = nativeCloudAuth ? [:] : [
-                "OPENAI_BASE_URL": openAIBaseURL,
-                "OPENAI_API_KEY": "mlx-local",
-            ]
-            return (gptmeEnv, ["gptme"] + defaultModelArgs(userArgs, flag: "--model", model: modelName) + userArgs)
+            var gptmeEnv: [String: String] = [:]
+            if !nativeCloudAuth {
+                // Use OPENAI_API_BASE (what gptme expects)
+                gptmeEnv["OPENAI_API_BASE"] = openAIBaseURL
+                gptmeEnv["OPENAI_API_KEY"] = "mlx-local"
+            }
+            var gptmeArgs = ["gptme", "--non-interactive"] + defaultModelArgs(userArgs, flag: "--model", model: modelName) + userArgs
+            return (gptmeEnv, gptmeArgs)
         default:
             return ([:], [runner.binary] + userArgs)
         }

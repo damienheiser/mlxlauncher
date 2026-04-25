@@ -92,11 +92,15 @@ public actor ConnectionHandler {
         guard let prepared = await backendClient.prepareBackendRequest(
             route: route, canonicalRequest: canonical, config: config
         ) else {
+            logger("[engrave] ERROR: failed to prepare backend request for route \(route.backend)/\(route.model)")
             return .complete(HTTPResponse.error("Failed to prepare backend request", status: 500))
         }
 
+        logger("[engrave] backend url: \(prepared.url) stream=\(canonical.stream)")
+
         // Determine backend response format for parsing
         let backendFormat = normalizeBackendType(route.backend)
+        logger("[engrave] backendFormat: \(backendFormat) (from backend type: \(route.backend))")
 
         if !canonical.stream {
             do {
@@ -353,11 +357,19 @@ public struct StreamingContext: @unchecked Sendable {
                 var sseParser = SSEParser()
 
                 do {
+                    var chunkCount = 0
                     for try await chunk in byteStream {
+                        chunkCount += 1
+                        if chunkCount <= 3 {
+                            logger("[engrave] stream chunk #\(chunkCount): \(String(chunk.prefix(200)).replacingOccurrences(of: "\n", with: "\\n"))")
+                        }
                         let events = sseParser.feed(chunk)
+                        if chunkCount <= 3 {
+                            logger("[engrave] SSE events from chunk: \(events.count)")
+                        }
                         for sseEvent in events {
                             if sseEvent.isDone {
-                                // Chat completions [DONE] → generate MessageEnd
+                                logger("[engrave] SSE [DONE]")
                                 let canonical: [CanonicalStreamEvent] = [.messageEnd]
                                 for ce in canonical {
                                     let lines = serializeCanonical(ce, provider: sourceProvider, translator: sourceTranslator, requestId: requestId, model: model)
@@ -366,7 +378,10 @@ public struct StreamingContext: @unchecked Sendable {
                                 continue
                             }
 
-                            guard let data = sseEvent.data else { continue }
+                            guard let data = sseEvent.data else {
+                                logger("[engrave] SSE event with no parseable JSON data: \(sseEvent.rawData.prefix(200))")
+                                continue
+                            }
 
                             // Parse backend SSE into canonical events
                             let canonicalEvents: [CanonicalStreamEvent]
@@ -383,6 +398,10 @@ public struct StreamingContext: @unchecked Sendable {
                                 canonicalEvents = backendParser.parseChatCompletionsSSE(data: data)
                             }
 
+                            if chunkCount <= 5 {
+                                logger("[engrave] canonical events: \(canonicalEvents.map { "\($0)" })")
+                            }
+
                             // Translate canonical events to source format
                             for canonical in canonicalEvents {
                                 let lines = serializeCanonical(canonical, provider: sourceProvider, translator: sourceTranslator, requestId: requestId, model: model)
@@ -390,6 +409,7 @@ public struct StreamingContext: @unchecked Sendable {
                             }
                         }
                     }
+                    logger("[engrave] stream ended after \(chunkCount) chunks")
                     continuation.finish()
                 } catch {
                     logger("[engrave] stream error: \(error.localizedDescription)")

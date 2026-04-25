@@ -438,6 +438,12 @@ public class StreamTranslator {
 
             // Text content delta
             if let content = JSON.string(delta["content"]), !content.isEmpty {
+                // Safety: if we never got a role announcement, emit messageStart now
+                if state == .idle {
+                    let id = JSON.string(data["id"]) ?? "chatcmpl_unknown"
+                    state = .inMessage
+                    events.append(.messageStart(messageId: id))
+                }
                 if state != .inBlock(.text) {
                     events.append(.contentBlockStart(index: blockIndex, blockType: .text, toolUseId: nil, toolName: nil))
                     state = .inBlock(.text)

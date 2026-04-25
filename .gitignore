@@ -5,3 +5,4 @@ venv/
 .engrave/
 .DS_Store
 bin/
+private/

@@ -161,8 +161,10 @@ class ModelStore: ObservableObject {
 
             // Compute total model size from safetensors files
             var totalBytes: UInt64 = 0
+            var hasWeights = false
             if let files = try? fm.contentsOfDirectory(atPath: modelDir.path) {
                 for file in files where file.hasSuffix(".safetensors") || file.hasSuffix(".gguf") {
+                    hasWeights = true
                     let filePath = modelDir.appendingPathComponent(file).path
                     if let attrs = try? fm.attributesOfItem(atPath: filePath),
                        let size = attrs[.size] as? UInt64 {
@@ -170,6 +172,9 @@ class ModelStore: ObservableObject {
                     }
                 }
             }
+
+            // Skip models without actual weight files (incomplete downloads)
+            guard hasWeights else { continue }
 
             // Extract model ID from path
             let modelId = extractModelId(from: modelDir.path, baseDir: dir)
