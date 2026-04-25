@@ -40,9 +40,9 @@ public actor ConnectionHandler {
             return .complete(HTTPResponse.json(["status": "ok", "version": "1.0.0"]))
         }
 
-        // Model list
-        if path == "/v1/models" && request.method == "GET" {
-            return handleModelList()
+        // Model list — serve in the format the requesting client expects
+        if request.method == "GET" && (path == "/v1/models" || path == "/v1beta/models") {
+            return handleModelList(request: request, path: path)
         }
 
         // Determine source provider from path
@@ -306,16 +306,75 @@ public actor ConnectionHandler {
         return ["promptTokenCount": 0, "candidatesTokenCount": 0, "totalTokenCount": 0]
     }
 
-    private func handleModelList() -> ConnectionResult {
-        var models: [[String: Any]] = []
-        for (providerName, providerConfig) in config.providers {
-            for model in providerConfig.models ?? [] {
-                models.append([
-                    "id": model,
-                    "object": "model",
-                    "owned_by": providerName,
-                ])
+    private func handleModelList(request: HTTPRequest, path: String) -> ConnectionResult {
+        // Collect all configured model names
+        var modelNames: [String] = []
+        for (_, routeTarget) in config.routes.defaults {
+            if routeTarget.model != "*" {
+                modelNames.append(routeTarget.model)
             }
+        }
+        for (_, providerConfig) in config.providers {
+            for model in providerConfig.models ?? [] {
+                if !modelNames.contains(model) {
+                    modelNames.append(model)
+                }
+            }
+        }
+        // Also include alias keys
+        for (alias, _) in config.routes.aliases {
+            if !modelNames.contains(alias) {
+                modelNames.append(alias)
+            }
+        }
+
+        // Detect format from request headers or path
+        let isGemini = path.contains("v1beta") ||
+            request.headers["x-goog-api-key"] != nil
+        let isAnthropic = request.headers["x-api-key"] != nil ||
+            request.headers["anthropic-version"] != nil
+
+        if isGemini {
+            // Gemini format: {models: [{name: "models/...", displayName: "...", ...}]}
+            let models = modelNames.map { name -> [String: Any] in
+                [
+                    "name": "models/\(name)",
+                    "displayName": name,
+                    "description": "Model served via Engrave interposer",
+                    "supportedGenerationMethods": ["generateContent", "streamGenerateContent"],
+                    "inputTokenLimit": 128000,
+                    "outputTokenLimit": 8192,
+                ]
+            }
+            return .complete(HTTPResponse.json(["models": models]))
+        }
+
+        if isAnthropic {
+            // Anthropic format: {data: [{id, type: "model", display_name, ...}]}
+            let models = modelNames.map { name -> [String: Any] in
+                [
+                    "id": name,
+                    "type": "model",
+                    "display_name": name,
+                    "created_at": "2025-01-01T00:00:00Z",
+                ]
+            }
+            return .complete(HTTPResponse.json([
+                "data": models,
+                "has_more": false,
+                "first_id": modelNames.first as Any,
+                "last_id": modelNames.last as Any,
+            ]))
+        }
+
+        // OpenAI format (default): {object: "list", data: [{id, object: "model", ...}]}
+        let models = modelNames.map { name -> [String: Any] in
+            [
+                "id": name,
+                "object": "model",
+                "created": Int(Date().timeIntervalSince1970),
+                "owned_by": "engrave",
+            ]
         }
         return .complete(HTTPResponse.json(["object": "list", "data": models]))
     }
