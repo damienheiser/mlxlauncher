@@ -22,6 +22,7 @@ public actor Engrave {
     private var _isRunning = false
     private var logContinuation: AsyncStream<String>.Continuation?
     private var _logStream: AsyncStream<String>?
+    private weak var _governance: (any GovernanceEvaluator)?
 
     /// Whether the proxy server is running
     public var isRunning: Bool { _isRunning }
@@ -38,8 +39,14 @@ public actor Engrave {
         return stream
     }
 
-    public init(config: EngraveConfig) {
+    public init(config: EngraveConfig, governance: (any GovernanceEvaluator)? = nil) {
         self._config = config
+        self._governance = governance
+    }
+
+    /// Set the governance evaluator (can be set after init)
+    public func setGovernance(_ governance: (any GovernanceEvaluator)?) {
+        self._governance = governance
     }
 
     /// Start the proxy server
@@ -58,7 +65,7 @@ public actor Engrave {
             Task { await self.log(message) }
         }
 
-        let server = ProxyServer(config: _config, logger: logger)
+        let server = ProxyServer(config: _config, logger: logger, governance: _governance)
         self.server = server
 
         try await server.start()

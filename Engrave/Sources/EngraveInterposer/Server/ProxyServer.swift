@@ -9,14 +9,16 @@ public actor ProxyServer {
     private let config: EngraveConfig
     private let backendClient: BackendClient
     private let logger: LogHandler
+    private weak var governance: (any GovernanceEvaluator)?
     private var _isRunning = false
 
     public var isRunning: Bool { _isRunning }
 
-    public init(config: EngraveConfig, logger: @escaping LogHandler) {
+    public init(config: EngraveConfig, logger: @escaping LogHandler, governance: (any GovernanceEvaluator)? = nil) {
         self.config = config
         self.backendClient = BackendClient()
         self.logger = logger
+        self.governance = governance
     }
 
     public func start() throws {
@@ -158,7 +160,7 @@ public actor ProxyServer {
             return
         }
 
-        let handler = ConnectionHandler(config: config, backendClient: backendClient, logger: logger)
+        let handler = ConnectionHandler(config: config, backendClient: backendClient, logger: logger, governance: governance)
         let result = await handler.handle(request: request)
 
         switch result {

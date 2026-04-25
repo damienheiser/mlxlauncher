@@ -11,7 +11,8 @@ let package = Package(
         .executableTarget(
             name: "MLXLauncher",
             dependencies: [
-                .product(name: "EngraveLib", package: "Engrave"),
+                .product(name: "EngraveInterposer", package: "Engrave"),
+                .product(name: "EngraveGovernance", package: "Engrave"),
             ],
             path: "Sources",
             linkerSettings: [

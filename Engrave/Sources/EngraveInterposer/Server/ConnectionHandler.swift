@@ -1,6 +1,13 @@
 import Foundation
 import Network
 
+/// Protocol for governance evaluation — allows decoupling from EngraveGovernance module.
+public protocol GovernanceEvaluator: AnyObject, Sendable {
+    func evaluateRequest(_ body: [String: Any], provider: String) async -> (allowed: Bool, reason: String?)
+    func evaluateToolCall(name: String, input: [String: Any]) async -> (allowed: Bool, reason: String?)
+    func evaluateStreamText(_ text: String) async -> (allowed: Bool, reason: String?)
+}
+
 /// Handles a single client connection through the full proxy pipeline:
 /// parse → route → translate → forward → translate back → respond
 public actor ConnectionHandler {
@@ -8,12 +15,14 @@ public actor ConnectionHandler {
     private let routeResolver: RouteResolver
     private let backendClient: BackendClient
     private let logger: LogHandler
+    private weak var governance: (any GovernanceEvaluator)?
 
-    public init(config: EngraveConfig, backendClient: BackendClient, logger: @escaping LogHandler) {
+    public init(config: EngraveConfig, backendClient: BackendClient, logger: @escaping LogHandler, governance: (any GovernanceEvaluator)? = nil) {
         self.config = config
         self.routeResolver = RouteResolver(config: config)
         self.backendClient = backendClient
         self.logger = logger
+        self.governance = governance
     }
 
     /// Process an HTTP request and generate a response.
@@ -63,6 +72,16 @@ public actor ConnectionHandler {
         }
 
         logger("[engrave] \(sourceProvider) request: model=\(canonical.model) messages=\(canonical.messages.count) stream=\(canonical.stream)")
+
+        // Governance check
+        if let gov = governance {
+            let result = await gov.evaluateRequest(body, provider: sourceProvider)
+            if !result.allowed {
+                let reason = result.reason ?? "Blocked by governance policy"
+                logger("[engrave] BLOCKED by governance: \(reason)")
+                return .complete(HTTPResponse.error(reason, status: 403))
+            }
+        }
 
         // Resolve route
         let route = routeResolver.resolve(sourceProvider: sourceProvider, model: canonical.model)

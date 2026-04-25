@@ -5,20 +5,26 @@ let package = Package(
     name: "Engrave",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "EngraveLib", targets: ["EngraveLib"]),
+        .library(name: "EngraveInterposer", targets: ["EngraveInterposer"]),
+        .library(name: "EngraveGovernance", targets: ["EngraveGovernance"]),
         .executable(name: "engrave", targets: ["EngraveCLI"]),
     ],
     targets: [
         .target(
-            name: "EngraveLib",
-            path: "Sources/EngraveLib",
+            name: "EngraveInterposer",
+            path: "Sources/EngraveInterposer",
             linkerSettings: [
                 .linkedFramework("Network"),
             ]
         ),
+        .target(
+            name: "EngraveGovernance",
+            dependencies: ["EngraveInterposer"],
+            path: "Sources/EngraveGovernance"
+        ),
         .executableTarget(
             name: "EngraveCLI",
-            dependencies: ["EngraveLib"],
+            dependencies: ["EngraveInterposer", "EngraveGovernance"],
             path: "Sources/EngraveCLI"
         ),
     ]

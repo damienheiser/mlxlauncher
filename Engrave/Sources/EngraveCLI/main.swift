@@ -1,5 +1,5 @@
 import Foundation
-import EngraveLib
+import EngraveInterposer
 
 let args = CommandLine.arguments
 

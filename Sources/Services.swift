@@ -1,6 +1,7 @@
 import Foundation
 import Combine
-import EngraveLib
+import EngraveInterposer
+import EngraveGovernance
 
 // MARK: - App State (shared across views)
 
@@ -20,10 +21,15 @@ class AppState: ObservableObject {
     @Published var runnerSettings: [String: RunnerLaunchSettings] = [:]
     @Published var extraMLXServerArguments = ""
     @Published var modelStore = ModelStore()
+    @Published var governanceConfig = GovernanceConfig()
+    @Published var governanceEvents: [GovernanceEvent] = []
+    @Published var governanceEnabled = false
 
     private var logTimer: Timer?
     private var interposer: Engrave?
     private var logStreamTask: Task<Void, Never>?
+    private var policyEngine: PolicyEngine?
+    private var governanceBridge: GovernanceBridge?
 
     let mlxBinDir: String
     let configDir: String
@@ -62,6 +68,7 @@ class AppState: ObservableObject {
             startLogTailing()
             modelStore.scanLocalModels()
             modelStore.startNetworkDiscovery()
+            loadGovernanceConfig()
         }
     }
     private var _bootstrapped = false
@@ -388,7 +395,21 @@ class AppState: ObservableObject {
             backendPort: UInt16(serverStatus.port),
             proxyPort: interposerPort
         )
-        let engrave = Engrave(config: config)
+
+        // Set up governance if enabled
+        var bridge: GovernanceBridge? = nil
+        if governanceConfig.enabled {
+            let engine = PolicyEngine(config: governanceConfig)
+            self.policyEngine = engine
+            bridge = GovernanceBridge(engine: engine)
+            self.governanceBridge = bridge
+            interposerLog.append("[governance] enabled: \(governanceConfig.rules.filter(\.enabled).count) rules, sandbox=\(governanceConfig.sandboxLevel.rawValue)")
+        } else {
+            self.policyEngine = nil
+            self.governanceBridge = nil
+        }
+
+        let engrave = Engrave(config: config, governance: bridge)
         self.interposer = engrave
 
         // Start streaming logs from the in-process interposer
@@ -436,6 +457,42 @@ class AppState: ObservableObject {
         }
         interposer = nil
         interposerRunning = false
+    }
+
+    // MARK: - Governance
+
+    func updateGovernanceConfig(_ config: GovernanceConfig) {
+        governanceConfig = config
+        governanceEnabled = config.enabled
+        // Save to disk
+        let path = "\(configDir)/governance.json"
+        try? config.save(to: path)
+        // Update engine if running
+        if let engine = policyEngine {
+            Task { await engine.updateConfig(config) }
+        }
+        interposerLog.append("[governance] config updated: \(config.rules.filter(\.enabled).count) rules, sandbox=\(config.sandboxLevel.rawValue)")
+    }
+
+    func loadGovernanceConfig() {
+        let path = "\(configDir)/governance.json"
+        if let config = try? GovernanceConfig.load(from: path) {
+            governanceConfig = config
+            governanceEnabled = config.enabled
+        }
+    }
+
+    func refreshGovernanceEvents() {
+        guard let engine = policyEngine else {
+            governanceEvents = []
+            return
+        }
+        Task {
+            let events = await engine.recentEvents(count: 100)
+            await MainActor.run {
+                self.governanceEvents = events
+            }
+        }
     }
 
     // MARK: - Profiles

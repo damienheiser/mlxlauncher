@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import EngraveGovernance
 
 // MARK: - Main 3-Column Layout
 
@@ -16,6 +17,7 @@ struct ContentView: View {
         case server = "Server"
         case interposer = "Interposer"
         case modelStore = "Model Store"
+        case governance = "Governance"
         var id: String { rawValue }
         var icon: String {
             switch self {
@@ -25,6 +27,7 @@ struct ContentView: View {
             case .server: return "server.rack"
             case .interposer: return "arrow.triangle.swap"
             case .modelStore: return "square.and.arrow.down"
+            case .governance: return "shield.checkered"
             }
         }
     }
@@ -157,6 +160,7 @@ struct ContentView: View {
         case .server: ServerPanel(state: state)
         case .interposer: InterposerPanel(state: state)
         case .modelStore: ModelStorePanel(state: state)
+        case .governance: GovernancePanel(state: state)
         }
     }
 }
@@ -1076,6 +1080,382 @@ struct ModelStorePanel: View {
 
     private func abbreviatePath(_ path: String) -> String {
         path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+    }
+}
+
+// MARK: - Governance Panel
+
+struct GovernancePanel: View {
+    @ObservedObject var state: AppState
+    @State private var editingRule: PolicyRule?
+    @State private var showRuleEditor = false
+    @State private var newBlockedPath = ""
+    @State private var newBlockedCommand = ""
+    @State private var newApprovalTool = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Governance Engine").font(.system(size: 14, weight: .semibold))
+                    Text("Policy rules, tool interception, sandbox control")
+                        .font(.system(size: 9)).foregroundStyle(.quaternary)
+                }
+                Spacer()
+                HStack(spacing: 4) {
+                    Circle().fill(state.governanceEnabled ? .green : .secondary.opacity(0.3))
+                        .frame(width: 6, height: 6)
+                    Text(state.governanceEnabled ? "Active" : "Disabled")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                }
+            }.padding(12)
+
+            Divider()
+
+            ScrollView {
+                VStack(spacing: 16) {
+                    enableSection
+                    if state.governanceConfig.enabled {
+                        sandboxSection
+                        rulesSection
+                        toolInterceptionSection
+                        presetsSection
+                        eventLogSection
+                    }
+                }.padding(12)
+            }
+        }
+    }
+
+    // MARK: - Enable/Disable
+
+    private var enableSection: some View {
+        HStack {
+            Toggle("Enable Governance", isOn: Binding(
+                get: { state.governanceConfig.enabled },
+                set: { enabled in
+                    var config = state.governanceConfig
+                    config.enabled = enabled
+                    state.updateGovernanceConfig(config)
+                }
+            )).toggleStyle(.switch)
+            Spacer()
+        }
+    }
+
+    // MARK: - Sandbox Level
+
+    private var sandboxSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Sandbox Level").font(.system(size: 11, weight: .semibold))
+            Picker("", selection: Binding(
+                get: { state.governanceConfig.sandboxLevel },
+                set: { level in
+                    var config = state.governanceConfig
+                    config.sandboxLevel = level
+                    state.updateGovernanceConfig(config)
+                }
+            )) {
+                Text("Jailed").tag(SandboxLevel.jailed)
+                Text("Sandbox").tag(SandboxLevel.sandbox)
+                Text("Workspace").tag(SandboxLevel.workspace)
+                Text("Full").tag(SandboxLevel.full)
+            }.pickerStyle(.segmented).labelsHidden()
+
+            Text(sandboxDescription(state.governanceConfig.sandboxLevel))
+                .font(.system(size: 9)).foregroundStyle(.tertiary)
+        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func sandboxDescription(_ level: SandboxLevel) -> String {
+        switch level {
+        case .jailed: return "All tool execution blocked. Read-only mode."
+        case .sandbox: return "Read-only tools allowed. Write operations blocked."
+        case .workspace: return "Read-write within project directory. System access restricted."
+        case .full: return "Full system access. Use with caution."
+        }
+    }
+
+    // MARK: - Policy Rules
+
+    private var rulesSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Policy Rules").font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Button { addDefaultRule() } label: {
+                    Image(systemName: "plus").font(.system(size: 9))
+                }.buttonStyle(.borderless)
+            }
+
+            if state.governanceConfig.rules.isEmpty {
+                Text("No rules configured. Add rules or use a preset below.")
+                    .font(.system(size: 9)).foregroundStyle(.quaternary)
+                    .padding(.vertical, 8)
+            } else {
+                ForEach(Array(state.governanceConfig.rules.enumerated()), id: \.element.id) { idx, rule in
+                    ruleRow(rule, index: idx)
+                }
+            }
+        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func ruleRow(_ rule: PolicyRule, index: Int) -> some View {
+        HStack(spacing: 6) {
+            Toggle("", isOn: Binding(
+                get: { rule.enabled },
+                set: { enabled in
+                    var config = state.governanceConfig
+                    config.rules[index].enabled = enabled
+                    state.updateGovernanceConfig(config)
+                }
+            )).toggleStyle(.switch).controlSize(.mini).labelsHidden()
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(rule.name).font(.system(size: 10, weight: .medium)).lineLimit(1)
+                HStack(spacing: 4) {
+                    severityBadge(rule.severity)
+                    Text(rule.trigger.rawValue).font(.system(size: 8)).foregroundStyle(.tertiary)
+                    if !rule.matchPatterns.isEmpty {
+                        Text("\(rule.matchPatterns.count) patterns").font(.system(size: 8)).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            Spacer()
+            Button {
+                var config = state.governanceConfig
+                config.rules.remove(at: index)
+                state.updateGovernanceConfig(config)
+            } label: {
+                Image(systemName: "trash").font(.system(size: 9)).foregroundStyle(.red.opacity(0.6))
+            }.buttonStyle(.borderless)
+        }.padding(.vertical, 3)
+    }
+
+    private func severityBadge(_ severity: RuleSeverity) -> some View {
+        let color: Color
+        switch severity {
+        case .block: color = .red
+        case .warn: color = .orange
+        case .modify: color = .yellow
+        case .rewrite: color = .blue
+        }
+        return Text(severity.rawValue).font(.system(size: 7, weight: .bold))
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(color.opacity(0.2)).foregroundStyle(color)
+            .clipShape(RoundedRectangle(cornerRadius: 2))
+    }
+
+    // MARK: - Tool Interception
+
+    private var toolInterceptionSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Tool Interception").font(.system(size: 11, weight: .semibold))
+
+            // Blocked paths
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Blocked Paths").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    TextField("Regex pattern...", text: $newBlockedPath).textFieldStyle(.roundedBorder).font(.system(size: 9))
+                    Button("Add") {
+                        guard !newBlockedPath.isEmpty else { return }
+                        var config = state.governanceConfig
+                        config.blockedPaths.append(newBlockedPath)
+                        state.updateGovernanceConfig(config)
+                        newBlockedPath = ""
+                    }.buttonStyle(.bordered).controlSize(.mini)
+                }
+                FlowLayout(spacing: 3) {
+                    ForEach(state.governanceConfig.blockedPaths, id: \.self) { path in
+                        HStack(spacing: 2) {
+                            Text(path).font(.system(size: 8, design: .monospaced))
+                            Button {
+                                var config = state.governanceConfig
+                                config.blockedPaths.removeAll { $0 == path }
+                                state.updateGovernanceConfig(config)
+                            } label: { Image(systemName: "xmark").font(.system(size: 6)) }.buttonStyle(.borderless)
+                        }.padding(.horizontal, 4).padding(.vertical, 2)
+                        .background(.red.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                }
+            }
+
+            Divider()
+
+            // Blocked commands
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Blocked Commands").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    TextField("Regex pattern...", text: $newBlockedCommand).textFieldStyle(.roundedBorder).font(.system(size: 9))
+                    Button("Add") {
+                        guard !newBlockedCommand.isEmpty else { return }
+                        var config = state.governanceConfig
+                        config.blockedCommands.append(newBlockedCommand)
+                        state.updateGovernanceConfig(config)
+                        newBlockedCommand = ""
+                    }.buttonStyle(.bordered).controlSize(.mini)
+                }
+                FlowLayout(spacing: 3) {
+                    ForEach(state.governanceConfig.blockedCommands, id: \.self) { cmd in
+                        HStack(spacing: 2) {
+                            Text(cmd).font(.system(size: 8, design: .monospaced))
+                            Button {
+                                var config = state.governanceConfig
+                                config.blockedCommands.removeAll { $0 == cmd }
+                                state.updateGovernanceConfig(config)
+                            } label: { Image(systemName: "xmark").font(.system(size: 6)) }.buttonStyle(.borderless)
+                        }.padding(.horizontal, 4).padding(.vertical, 2)
+                        .background(.orange.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                }
+            }
+
+            Divider()
+
+            // Approval-required tools
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Require Approval For").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    TextField("Tool name...", text: $newApprovalTool).textFieldStyle(.roundedBorder).font(.system(size: 9))
+                    Button("Add") {
+                        guard !newApprovalTool.isEmpty else { return }
+                        var config = state.governanceConfig
+                        config.requireApprovalForTools.append(newApprovalTool)
+                        state.updateGovernanceConfig(config)
+                        newApprovalTool = ""
+                    }.buttonStyle(.bordered).controlSize(.mini)
+                }
+                FlowLayout(spacing: 3) {
+                    ForEach(state.governanceConfig.requireApprovalForTools, id: \.self) { tool in
+                        HStack(spacing: 2) {
+                            Text(tool).font(.system(size: 8, design: .monospaced))
+                            Button {
+                                var config = state.governanceConfig
+                                config.requireApprovalForTools.removeAll { $0 == tool }
+                                state.updateGovernanceConfig(config)
+                            } label: { Image(systemName: "xmark").font(.system(size: 6)) }.buttonStyle(.borderless)
+                        }.padding(.horizontal, 4).padding(.vertical, 2)
+                        .background(.blue.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                }
+            }
+        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    // MARK: - Presets
+
+    private var presetsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Presets").font(.system(size: 11, weight: .semibold))
+            HStack(spacing: 6) {
+                Button("Strict") { state.updateGovernanceConfig(.strict) }
+                    .buttonStyle(.bordered).controlSize(.small)
+                Button("Standard") { state.updateGovernanceConfig(.standard) }
+                    .buttonStyle(.bordered).controlSize(.small)
+                Button("Minimal") { state.updateGovernanceConfig(.minimal) }
+                    .buttonStyle(.bordered).controlSize(.small)
+                Button("Clear All") {
+                    var config = GovernanceConfig()
+                    config.enabled = true
+                    state.updateGovernanceConfig(config)
+                }.buttonStyle(.bordered).controlSize(.small).tint(.red)
+            }
+        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    // MARK: - Event Log
+
+    private var eventLogSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Recent Decisions").font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Button { state.refreshGovernanceEvents() } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 9))
+                }.buttonStyle(.borderless)
+            }
+
+            if state.governanceEvents.isEmpty {
+                Text("No governance decisions yet. Events appear when requests are evaluated.")
+                    .font(.system(size: 9)).foregroundStyle(.quaternary)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(state.governanceEvents.suffix(20)) { event in
+                    HStack(spacing: 6) {
+                        Circle().fill(eventColor(event.decision)).frame(width: 5, height: 5)
+                        Text(event.decision).font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(eventColor(event.decision))
+                        Text(event.eventType).font(.system(size: 8)).foregroundStyle(.secondary)
+                        if let rule = event.ruleName {
+                            Text(rule).font(.system(size: 8, design: .monospaced)).foregroundStyle(.tertiary)
+                        }
+                        Spacer()
+                        Text(event.timestamp, style: .time).font(.system(size: 7)).foregroundStyle(.quaternary)
+                    }.padding(.vertical, 1)
+                }
+            }
+        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func eventColor(_ decision: String) -> Color {
+        switch decision {
+        case "allow": return .green
+        case "warn": return .orange
+        case "block": return .red
+        case "modify": return .yellow
+        case "rewrite": return .blue
+        default: return .secondary
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func addDefaultRule() {
+        var config = state.governanceConfig
+        config.rules.append(PolicyRule(
+            name: "New Rule",
+            trigger: .request,
+            severity: .warn
+        ))
+        state.updateGovernanceConfig(config)
+    }
+}
+
+// MARK: - Flow Layout (for tag chips)
+
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let result = arrange(proposal: proposal, subviews: subviews)
+        return result.size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = arrange(proposal: ProposedViewSize(width: bounds.width, height: bounds.height), subviews: subviews)
+        for (index, position) in result.positions.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + position.x, y: bounds.minY + position.y), proposal: .unspecified)
+        }
+    }
+
+    private func arrange(proposal: ProposedViewSize, subviews: Subviews) -> (size: CGSize, positions: [CGPoint]) {
+        let maxWidth = proposal.width ?? .infinity
+        var positions: [CGPoint] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth && x > 0 {
+                x = 0; y += rowHeight + spacing; rowHeight = 0
+            }
+            positions.append(CGPoint(x: x, y: y))
+            rowHeight = max(rowHeight, size.height)
+            x += size.width + spacing
+        }
+        return (CGSize(width: maxWidth, height: y + rowHeight), positions)
     }
 }
 
