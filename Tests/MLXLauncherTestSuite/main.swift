@@ -129,10 +129,10 @@ tests.append(("All bundled runners are Engrave-governed", {
     try expect(services.contains("ENGRAVE_INTERPOSER_URL"), "Launches must expose Engrave interposer URL")
 }))
 
-tests.append(("Governance docs capture HeM migration scope", {
-    let hemNotes = try read(root.appendingPathComponent("private/docs/hem-to-engrave-governance-priority-three-april-25-2026.md").path)
+tests.append(("Governance docs capture migration scope", {
+    let hemNotes = try read(root.appendingPathComponent("private/docs/archive-hem-governance-priorities-april-25-2026.md").path)
     for phrase in ["Sub-Agent Launch Control", "Context Exhaustion Relay", "Human In The Loop Interception", "Git Commit Hygiene", "No Undocumented Mocks Or Stubs"] {
-        try expect(hemNotes.contains(phrase), "HeM migration notes must mention \(phrase)")
+        try expect(hemNotes.contains(phrase), "Migration notes must mention \(phrase)")
     }
 }))
 

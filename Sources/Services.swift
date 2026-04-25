@@ -500,9 +500,11 @@ class AppState: ObservableObject {
             return
         }
 
+        // Don't restart if already running — just update the target description
         if interposerRunning {
-            interposerLog.append("Restarting engrave proxy...")
-            stopInterposer()
+            interposerTarget = targetDescription(for: model)
+            interposerLog.append("Interposer already running, updated target to \(model.id)")
+            return
         }
 
         let config = engraveConfig(for: model)
