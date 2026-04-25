@@ -605,7 +605,7 @@ class AppState: ObservableObject {
             providers: [
                 "local": EngraveConfig.ProviderConfig(
                     type: "chat_completions",
-                    baseURL: "http://localhost:\(serverStatus.port)",
+                    baseURL: "http://127.0.0.1:\(serverStatus.port)",
                     apiKeyEnv: "MLX_LAUNCHER_API_KEY",
                     models: nil
                 ),
