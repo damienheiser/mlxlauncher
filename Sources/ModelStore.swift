@@ -94,10 +94,13 @@ class ModelStore: ObservableObject {
     /// Scan all configured directories for local models
     func scanLocalModels() {
         isScanning = true
-        Task {
-            let models = await Self.scanAllDirectories(scanDirectories)
-            self.localModels = models
-            self.isScanning = false
+        let dirs = scanDirectories
+        Task.detached {
+            let models = await Self.scanAllDirectories(dirs)
+            await MainActor.run {
+                self.localModels = models
+                self.isScanning = false
+            }
         }
     }
 
