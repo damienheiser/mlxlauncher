@@ -873,7 +873,8 @@ class AppState: ObservableObject {
             let codexArgs = nativeCloudAuth
                 ? defaultModelArgs(userArgs, flag: "-m", model: modelId) + userArgs
                 : defaultCodexArgs(userArgs, model: modelId) + userArgs
-            return (codexEnv, ["codex"] + codexArgs)
+            // "exec" subcommand is required per AgentInterposer spec
+            return (codexEnv, ["codex", "exec"] + codexArgs)
         case "gemini":
             let geminiArgs = defaultGeminiArgs(userArgs, model: modelName) + userArgs
             let geminiEnv: [String: String] = nativeCloudAuth ? [:] : [
@@ -970,10 +971,79 @@ class AppState: ObservableObject {
         try? FileManager.default.createDirectory(atPath: "\(dir)/hooks", withIntermediateDirectories: true)
         try? governanceBrief(config).write(toFile: "\(dir)/engrave-governance-brief.md", atomically: true, encoding: .utf8)
         try? geminiPolicy(config).write(toFile: "\(dir)/gemini-policy.md", atomically: true, encoding: .utf8)
+        try? subAgentInstructions(config).write(toFile: "\(dir)/sub-agent-launch.md", atomically: true, encoding: .utf8)
         try? preCommitHook(config).write(toFile: "\(dir)/hooks/pre-commit", atomically: true, encoding: .utf8)
         try? sessionCloseHook(config).write(toFile: "\(dir)/hooks/session-close-check", atomically: true, encoding: .utf8)
         _ = chmod("\(dir)/hooks/pre-commit", 0o755)
         _ = chmod("\(dir)/hooks/session-close-check", 0o755)
+    }
+
+    private func subAgentInstructions(_ config: GovernanceConfig) -> String {
+        let uia = config.uiaConfig ?? .default
+        let budgets = config.contextBudgets ?? ContextBudget.defaults
+        return """
+        # Engrave Sub-Agent Launch Protocol
+
+        ALL sub-agent and model traffic MUST route through the Engrave interposer.
+        Interposer URL: http://localhost:\(interposerPort)
+
+        ## Sub-Agent Launch Commands
+
+        ### Claude Code (Anthropic)
+        ```bash
+        ANTHROPIC_BASE_URL=http://localhost:\(interposerPort) ANTHROPIC_API_KEY=mlx-local \\
+          claude --print --output-format stream-json --model <model> -p "<task>"
+        ```
+        For interactive sub-agents (long-running):
+        ```bash
+        ANTHROPIC_BASE_URL=http://localhost:\(interposerPort) ANTHROPIC_API_KEY=mlx-local \\
+          claude --model <model> --permission-mode auto
+        ```
+
+        ### Codex CLI (OpenAI)
+        ```bash
+        OPENAI_BASE_URL=http://localhost:\(interposerPort)/v1 OPENAI_API_KEY=mlx-local \\
+          codex exec --full-auto -m <model> "<task>"
+        ```
+
+        ### Gemini CLI (Google)
+        ```bash
+        GOOGLE_GEMINI_BASE_URL=http://localhost:\(interposerPort) GEMINI_API_KEY=mlx-local GOOGLE_API_KEY=mlx-local \\
+          gemini --yolo -m <model> -p "<task>"
+        ```
+
+        ### Aider
+        ```bash
+        OPENAI_API_BASE=http://localhost:\(interposerPort)/v1 OPENAI_API_KEY=mlx-local \\
+          aider --yes-always --no-auto-commits --model openai/<model> --message "<task>"
+        ```
+
+        ### gptme
+        ```bash
+        OPENAI_API_BASE=http://localhost:\(interposerPort)/v1 OPENAI_API_KEY=mlx-local \\
+          gptme --non-interactive --model <model> "<task>"
+        ```
+
+        ## Model Routing
+
+        | Task Type | Model | Rationale |
+        |-----------|-------|-----------|
+        | Bounded sub-tasks (file edits, simple code) | \(uia.cheapModel) | Cost-effective, fast |
+        | Local-only (git, tests, file ops) | \(uia.localModel) | No API cost, private |
+        | Complex reasoning, architecture | \(uia.orchestratorModel) | Full capability |
+        | Context relay / handoff briefs | \(uia.cheapModel) | Compaction only |
+
+        Governance may override model selection per policy rules.
+
+        ## Context Exhaustion Protocol
+
+        \(budgets.sorted { $0.key < $1.key }.map { "- **\($0.key)**: relay at \(Int($0.value.thresholdPercent * 100))% via `\($0.value.relayModel)`, handoff=`\($0.value.handoffStyle)`" }.joined(separator: "\n"))
+
+        Before context exhaustion:
+        1. Create a detailed handoff brief summarizing progress, remaining work, and key decisions
+        2. Spawn a replacement agent with the brief as input
+        3. The replacement agent continues from the handoff brief
+        """
     }
 
     private func governanceBrief(_ config: GovernanceConfig) -> String {
@@ -1005,7 +1075,8 @@ class AppState: ObservableObject {
     }
 
     private func geminiPolicy(_ config: GovernanceConfig) -> String {
-        governanceBrief(config) + """
+        governanceBrief(config) + "\n\n" + subAgentInstructions(config) + """
+
 
         ## Runner Policy
         - Decompose multi-step work into a task DAG before spawning agents.
@@ -1093,13 +1164,53 @@ class AppState: ObservableObject {
             "ENGRAVE_GOVERNANCE_ENABLED": governanceConfig.enabled ? "1" : "0",
             "ENGRAVE_GOVERNANCE_BRIEF": "\(configDir)/governance/engrave-governance-brief.md",
             "ENGRAVE_GOVERNANCE_POLICY": "\(configDir)/governance/gemini-policy.md",
+            "ENGRAVE_SUB_AGENT_LAUNCH": "\(configDir)/governance/sub-agent-launch.md",
             "ENGRAVE_INTERPOSER_URL": "http://localhost:\(interposerPort)",
+            "ENGRAVE_INTERPOSER_PORT": String(interposerPort),
             "ENGRAVE_ALL_AGENTS_THROUGH_INTERPOSER": "1",
         ]
     }
 
     private func governanceRunnerInstruction() -> String {
-        "Route all model traffic, sub-agent launches, context relay, human-in-the-loop holds, workflow DAG updates, and governance steering through Engrave. Prefer local or cheap models for bounded sub-agent work when safe."
+        let uia = governanceConfig.uiaConfig ?? .default
+        let budgets = governanceConfig.contextBudgets ?? ContextBudget.defaults
+        let cheapModel = uia.cheapModel
+        let localModel = uia.localModel
+
+        return """
+        ENGRAVE GOVERNANCE — SUB-AGENT LAUNCH PROTOCOL
+
+        All sub-agent traffic MUST route through the Engrave interposer at http://localhost:\(interposerPort).
+
+        When spawning sub-agents via Bash, use these exact patterns:
+
+        Claude Code sub-agent:
+          ANTHROPIC_BASE_URL=http://localhost:\(interposerPort) ANTHROPIC_API_KEY=mlx-local \\
+          claude --print --output-format stream-json --model \(localModel) -p "<task>"
+
+        Codex CLI sub-agent:
+          OPENAI_BASE_URL=http://localhost:\(interposerPort)/v1 OPENAI_API_KEY=mlx-local \\
+          codex exec --full-auto -m \(cheapModel) "<task>"
+
+        Gemini CLI sub-agent:
+          GOOGLE_GEMINI_BASE_URL=http://localhost:\(interposerPort) GEMINI_API_KEY=mlx-local GOOGLE_API_KEY=mlx-local \\
+          gemini --yolo -m \(cheapModel) -p "<task>"
+
+        Aider sub-agent:
+          OPENAI_API_BASE=http://localhost:\(interposerPort)/v1 OPENAI_API_KEY=mlx-local \\
+          aider --yes-always --no-auto-commits --model openai/\(cheapModel) --message "<task>"
+
+        MODEL ROUTING:
+        - Bounded, well-scoped sub-tasks: use \(cheapModel) (cheap model)
+        - Local-only tasks (file ops, git, tests): use \(localModel) (local model)
+        - Complex reasoning or architecture: use the orchestrator model
+        - Governance may override model selection per policy rules
+
+        CONTEXT BUDGETS:
+        \(budgets.sorted { $0.key < $1.key }.map { "- \($0.key): relay at \(Int($0.value.thresholdPercent * 100))% via \($0.value.relayModel), handoff=\($0.value.handoffStyle)" }.joined(separator: "\n"))
+
+        Before context exhaustion, create a detailed handoff brief and spawn a replacement agent with the brief as input.
+        """
     }
 
     private func hasFlag(_ args: [String], _ flag: String) -> Bool {
