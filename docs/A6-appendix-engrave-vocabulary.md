@@ -1,5 +1,6 @@
 # Appendix A6: Engrave Vocabulary — Canon
 
+**Version:** 1.0.0
 **Status:** CANON — ratified by operator review, April 25 2026
 **Inputs:** `engrave-vocabulary-alignment.md`, `vocabulary.md`, Rust feedback (agent session), MLX feedback (agent session), operator decisions
 **Scope:** All Engrave codebases (Rust, Swift, future SDKs), CLI, TUI, API, logs, documentation, DSL
