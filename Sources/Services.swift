@@ -377,6 +377,23 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Whether the selected model differs from the running server model.
+    var selectedModelDiffersFromServer: Bool {
+        guard let model = selectedModel, model.source == .local,
+              serverStatus.state == .running else { return false }
+        return runningServerDoesNotMatch(model)
+    }
+
+    /// Relaunch the MLX server with the currently selected model.
+    func relaunchServerWithSelectedModel() {
+        guard let model = selectedModel, model.source == .local else { return }
+        stopServer()
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            self.startServer(model: model)
+        }
+    }
+
     private func serverStartArguments(model: MLXModel, profile: GenerationProfile) -> [String] {
         var args = [
             "-m", "mlx_lm", "server",
@@ -771,18 +788,14 @@ class AppState: ObservableObject {
         let command = runnerCommand(model: model, runner: runner, userArgs: userArgs)
         let usesInterposer = shouldUseInterposer(runner: runner, model: model)
 
-        // Only start/restart the MLX server if needed for a local model
-        if model.source == .local {
-            if serverStatus.state != .running || runningServerDoesNotMatch(model) {
-                startServer(model: model)
-            }
+        // Start MLX server only if not running at all. Never restart on Launch.
+        // If the model changed, the UI will show a confirmation dialog (see Views.swift).
+        if model.source == .local && serverStatus.state != .running {
+            startServer(model: model)
         }
-        // Only start the interposer if it's not already running
+        // Start interposer only if not running. Never restart on Launch.
         if usesInterposer && !interposerRunning {
             startInterposer()
-        } else if usesInterposer && interposerRunning {
-            // Update the interposer config for the new model without restarting
-            interposerTarget = targetDescription(for: model)
         }
 
         let environment = command.environment.merging(governanceRunnerEnvironment()) { current, _ in current }

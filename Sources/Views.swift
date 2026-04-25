@@ -61,6 +61,7 @@ struct ContentView: View {
     @State private var rightPanel: RightPanel = .parameters
     @State private var webServerStarted = false
     @State private var webServer: WebServer?
+    @State private var showModelChangeWarning = false
 
     enum RightPanel: String, CaseIterable, Identifiable {
         case parameters = "Parameters"
@@ -195,7 +196,13 @@ struct ContentView: View {
                         .foregroundStyle(Theme.creamDim).lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Button { state.launch() } label: {
+                Button {
+                    if state.selectedModelDiffersFromServer {
+                        showModelChangeWarning = true
+                    } else {
+                        state.launch()
+                    }
+                } label: {
                     HStack {
                         Image(systemName: "play.fill").font(.system(size: 12))
                         Text("Launch").font(.system(size: 12, weight: .semibold))
@@ -204,6 +211,17 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent).tint(Theme.accent)
                 .disabled(state.selectedModel == nil || !state.selectedRunner.isInstalled)
                 .keyboardShortcut(.return, modifiers: .command)
+                .alert("Model Change", isPresented: $showModelChangeWarning) {
+                    Button("Relaunch MLX Server") {
+                        state.relaunchServerWithSelectedModel()
+                        // Delay launch to let server start
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { state.launch() }
+                    }
+                    Button("Launch Anyway", role: .destructive) { state.launch() }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("The selected model differs from the running MLX server. Relaunching the server will require any existing runners to be restarted to use the updated model.")
+                }
             }
             .padding(12)
         }
