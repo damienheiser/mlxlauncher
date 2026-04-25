@@ -17,6 +17,18 @@ mkdir -p "$MACOS" "$RESOURCES"
 
 cp ".build/arm64-apple-macosx/$CONFIGURATION/MLXLauncher" "$MACOS/MLXLauncher"
 
+# Copy MLX Metal shader library (required for GPU inference)
+MLX_METALLIB="/opt/homebrew/lib/python3.14/site-packages/mlx/lib/mlx.metallib"
+if [ -f "$MLX_METALLIB" ]; then
+  cp "$MLX_METALLIB" "$MACOS/mlx.metallib"
+  echo "Copied mlx.metallib from Python mlx package"
+elif [ -f ".build/arm64-apple-macosx/$CONFIGURATION/mlx.metallib" ]; then
+  cp ".build/arm64-apple-macosx/$CONFIGURATION/mlx.metallib" "$MACOS/mlx.metallib"
+else
+  echo "WARNING: mlx.metallib not found — GPU inference will fail"
+  echo "Install: pip3 install mlx && copy mlx.metallib next to the binary"
+fi
+
 swift generate_icon.swift "$RESOURCES/AppIcon.icns"
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'

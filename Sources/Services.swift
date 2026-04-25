@@ -113,7 +113,7 @@ class AppState: ObservableObject {
     private func connectModelStore() {
         guard modelStoreObserverCancellable == nil else { return }
         modelStoreObserverCancellable = modelStore.objectWillChange
-            .receive(on: DispatchQueue.main)
+            .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.mergeLaunchableModels()
             }
