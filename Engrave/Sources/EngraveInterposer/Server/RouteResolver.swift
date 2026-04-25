@@ -71,12 +71,14 @@ public struct RouteResolver {
             return ("openai", nil)
         }
         // Gemini: /v1/models/{model}:generateContent or :streamGenerateContent
-        if path.hasPrefix("/v1/models/") && (path.contains(":generateContent") || path.contains(":streamGenerateContent")) {
-            // Extract model name from path
-            let afterModels = path.dropFirst("/v1/models/".count)
-            if let colonIdx = afterModels.firstIndex(of: ":") {
-                let model = String(afterModels[afterModels.startIndex..<colonIdx])
-                return ("gemini", model)
+        // Also handles /v1beta/models/ which Gemini CLI uses
+        for prefix in ["/v1/models/", "/v1beta/models/"] {
+            if path.hasPrefix(prefix) && (path.contains(":generateContent") || path.contains(":streamGenerateContent")) {
+                let afterModels = path.dropFirst(prefix.count)
+                if let colonIdx = afterModels.firstIndex(of: ":") {
+                    let model = String(afterModels[afterModels.startIndex..<colonIdx])
+                    return ("gemini", model)
+                }
             }
         }
         return ("unknown", nil)

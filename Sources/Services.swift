@@ -654,15 +654,21 @@ class AppState: ObservableObject {
             // Sub-agent launches use "exec" — that's handled in the governance sub-agent instructions.
             return (codexEnv, ["codex"] + codexArgs)
         case "gemini":
-            // Don't pass local model names to Gemini — it validates against Google's registry.
-            // Use "gemini-2.0-flash" as a placeholder; the interposer routes to local MLX anyway.
+            // For local models: use "gemini-2.0-flash" as model name so Gemini CLI accepts it.
+            // The interposer wildcard route sends everything to local MLX regardless.
+            // Set GOOGLE_GEMINI_BASE_URL to interposer so all API calls go through us.
+            // Also set HTTPS_PROXY to intercept model validation calls.
             let geminiModel = model.source == .local ? "gemini-2.0-flash" : modelName
             let geminiArgs = defaultGeminiArgs(userArgs, model: geminiModel) + userArgs
-            let geminiEnv: [String: String] = nativeCloudAuth ? [:] : [
+            var geminiEnv: [String: String] = nativeCloudAuth ? [:] : [
                 "GOOGLE_GEMINI_BASE_URL": "http://127.0.0.1:\(interposerPort)",
                 "GEMINI_API_KEY": "mlx-local",
                 "GOOGLE_API_KEY": "mlx-local",
             ]
+            // Route ALL Gemini traffic through interposer (captures model validation too)
+            if model.source == .local {
+                geminiEnv["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+            }
             return (geminiEnv, ["gemini"] + geminiArgs)
         case "aider":
             var aiderEnv: [String: String] = [:]
