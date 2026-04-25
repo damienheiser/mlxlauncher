@@ -169,7 +169,20 @@ async function init() {
   renderRunners();
   renderCombos();
   pollServer();
+  setTimeout(refreshModels, 1000);
+  setInterval(refreshModels, 5000);
   setInterval(pollServer, 5000);
+}
+
+async function refreshModels() {
+  try {
+    const previous = selectedModel?.launchIdentity || selectedModel?.id;
+    models = await fetchJSON('/api/models');
+    selectedModel = previous ? models.find(m => (m.launchIdentity || m.id) === previous) || null : selectedModel;
+    renderModels(document.getElementById('model-search').value);
+    renderCombos(document.getElementById('combo-search').value);
+    document.getElementById('btn-launch').disabled = !selectedModel || !selectedRunner;
+  } catch(e) {}
 }
 
 function renderModels(filter = '') {
@@ -178,7 +191,7 @@ function renderModels(filter = '') {
   const filtered = models.filter(m => !f || m.id.toLowerCase().includes(f) || m.shortName.toLowerCase().includes(f));
   document.getElementById('model-count').textContent = filtered.length + ' models';
   el.innerHTML = filtered.map(m => `
-    <div class="model-item ${selectedModel?.id === m.id ? 'selected' : ''}" onclick="selectModel('${m.id}')">
+    <div class="model-item ${(selectedModel?.launchIdentity || selectedModel?.id) === (m.launchIdentity || m.id) ? 'selected' : ''}" onclick="selectModel('${m.launchIdentity || m.id}')">
       <span class="name" title="${m.id}">${m.shortName}</span>
       <span class="badge ${badgeClass[m.source]}">${m.provider}</span>
       <span class="size">${m.size}</span>
@@ -211,7 +224,7 @@ function renderCombos(filter = '') {
   }
   document.getElementById('combo-count').textContent = combos.length + ' combinations';
   el.innerHTML = combos.map(c => `
-    <div class="combo-card" onclick="launchCombo('${c.r.id}','${c.m.id}')">
+    <div class="combo-card" onclick="launchCombo('${c.r.id}','${c.m.launchIdentity || c.m.id}')">
       <div class="runner-name">${icons[c.r.id] || ''} ${c.r.name}</div>
       <div class="model-name">${c.m.shortName}</div>
       <div class="meta">
@@ -223,7 +236,7 @@ function renderCombos(filter = '') {
 }
 
 function selectModel(id) {
-  selectedModel = models.find(m => m.id === id);
+  selectedModel = models.find(m => (m.launchIdentity || m.id) === id || m.id === id);
   renderModels(document.getElementById('model-search').value);
   document.getElementById('btn-launch').disabled = !selectedModel || !selectedRunner;
 }
@@ -262,7 +275,7 @@ async function restartServer() {
 }
 async function launchSelected() {
   if (!selectedModel || !selectedRunner) return;
-  await fetchJSON('/api/launch', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:selectedModel.id, runner:selectedRunner.id})});
+  await fetchJSON('/api/launch', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:selectedModel.launchIdentity || selectedModel.id, runner:selectedRunner.id})});
 }
 async function launchCombo(runnerId, modelId) {
   await fetchJSON('/api/launch', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:modelId, runner:runnerId})});

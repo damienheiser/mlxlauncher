@@ -25,6 +25,19 @@ struct DiscoveredModel: Identifiable, Hashable {
     var sizeBytes: UInt64?            // Size in bytes for sorting
     var isDownloading: Bool = false
     var downloadProgress: Double = 0  // 0.0 to 1.0
+
+    var index: Int? {
+        guard let last = id.split(separator: "/").last,
+              let number = last.split(separator: "-").first,
+              let parsed = Int(number) else { return nil }
+        return parsed
+    }
+
+    var launchIdentity: String {
+        if let localPath { return "local:\(localPath)" }
+        if let networkHost, let networkPort { return "network:\(networkHost):\(networkPort)/\(id)" }
+        return "\(location.rawValue):\(id)"
+    }
 }
 
 // MARK: - HuggingFace API Types

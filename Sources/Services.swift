@@ -18,6 +18,7 @@ class AppState: ObservableObject {
     @Published var serverLog: [String] = []
     @Published var interposerLog: [String] = []
     @Published var interposerRunning = false
+    @Published var interposerTarget = "Not configured"
     @Published var runnerSettings: [String: RunnerLaunchSettings] = [:]
     @Published var extraMLXServerArguments = ""
     @Published var modelStore = ModelStore()
@@ -27,9 +28,11 @@ class AppState: ObservableObject {
 
     private var logTimer: Timer?
     private var interposer: Engrave?
+    private var mlxServerProcess: Process?
     private var logStreamTask: Task<Void, Never>?
     private var policyEngine: PolicyEngine?
     private var governanceBridge: GovernanceBridge?
+    private var modelStoreObserverTask: Task<Void, Never>?
 
     let mlxBinDir: String
     let configDir: String
@@ -50,6 +53,8 @@ class AppState: ObservableObject {
         runnerSettings = Dictionary(uniqueKeysWithValues: allRunners.map {
             ($0.id, RunnerLaunchSettings(workingDirectory: home, enabledFlags: [], values: [:], extraArguments: ""))
         })
+        loadRunnerSettings()
+        loadModelStoreSettings()
         loadProfiles()
         loadPrompts()
     }
@@ -63,6 +68,7 @@ class AppState: ObservableObject {
 
         Task {
             refreshModels()
+            connectModelStore()
             checkServer()
             checkInterposer()
             startLogTailing()
@@ -100,11 +106,68 @@ class AppState: ObservableObject {
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.localModels = local
-                self.allModels = local + cloud
-                if self.selectedModel == nil, let first = self.allModels.first {
-                    self.selectedModel = first
-                }
+                self.mergeLaunchableModels(scriptModels: local, cloudModels: cloud)
             }
+        }
+    }
+
+    private func connectModelStore() {
+        guard modelStoreObserverTask == nil else { return }
+        modelStoreObserverTask = Task { [weak self] in
+            guard let self else { return }
+            for await _ in self.modelStore.objectWillChange.values {
+                await MainActor.run { self.mergeLaunchableModels() }
+            }
+        }
+    }
+
+    private func mergeLaunchableModels(scriptModels: [MLXModel]? = nil, cloudModels: [MLXModel]? = nil) {
+        if let scriptModels { localModels = scriptModels }
+        let cloud = cloudModels ?? allModels.filter(\.isCloud)
+        let discoveredLocal = modelStore.localModels.enumerated().map { offset, model in
+            MLXModel(
+                id: model.id,
+                index: model.index ?? offset,
+                size: model.size,
+                source: .local,
+                localPath: model.localPath
+            )
+        }
+        let network = modelStore.networkModels.enumerated().map { offset, model in
+            MLXModel(
+                id: model.id,
+                index: -10_000 - offset,
+                size: model.size,
+                source: .network,
+                networkHost: model.networkHost,
+                networkPort: model.networkPort
+            )
+        }
+
+        var seen = Set<String>()
+        let merged = (localModels + discoveredLocal + network + cloud).filter { seen.insert($0.launchIdentity).inserted }
+        allModels = merged
+        if let selectedModel, !merged.contains(where: { $0.launchIdentity == selectedModel.launchIdentity }) {
+            self.selectedModel = merged.first
+        } else if selectedModel == nil {
+            selectedModel = merged.first
+        }
+    }
+
+    func selectDiscoveredModel(_ model: DiscoveredModel) {
+        mergeLaunchableModels()
+        selectedModel = allModels.first { $0.launchIdentity == model.launchIdentity }
+        if selectedModel == nil {
+            selectedModel = MLXModel(
+                id: model.id,
+                index: model.index ?? allModels.count,
+                size: model.size,
+                source: model.location == .network ? .network : .local,
+                localPath: model.localPath,
+                networkHost: model.networkHost,
+                networkPort: model.networkPort
+            )
+            allModels.append(selectedModel!)
         }
     }
 
@@ -178,23 +241,27 @@ class AppState: ObservableObject {
         serverStatus = ServerStatus(state: .starting, modelName: model.id, port: serverStatus.port)
         serverLog = ["Starting MLX server for \(model.id)..."]
 
-        let command = serverStartCommand(model: model, profile: activeProfile)
-
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = ["-c", command]
+        proc.executableURL = URL(fileURLWithPath: "\(venvDir)/bin/python3")
+        proc.arguments = serverStartArguments(model: model, profile: activeProfile)
         proc.environment = ProcessInfo.processInfo.environment
+        let logURL = URL(fileURLWithPath: "/tmp/mlx-server.log")
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let logHandle = try? FileHandle(forWritingTo: logURL)
+        try? logHandle?.truncate(atOffset: 0)
+        proc.standardOutput = logHandle ?? FileHandle.nullDevice
+        proc.standardError = logHandle ?? FileHandle.nullDevice
 
         do {
             try proc.run()
-            proc.waitUntilExit()  // bash returns immediately since we backgrounded with &
+            mlxServerProcess = proc
         } catch {
             serverStatus.state = .error
             serverLog.append("Failed to start: \(error)")
             return
         }
 
-        serverLog.append("Server process launched (detached).")
+        serverLog.append("Server process launched. PID: \(proc.processIdentifier)")
 
         // Poll for readiness and discover the PID
         Task {
@@ -211,10 +278,9 @@ class AppState: ObservableObject {
                 let url = URL(string: "http://localhost:\(serverStatus.port)/v1/models")!
                 if let (_, resp) = try? await URLSession.shared.data(from: url),
                    let http = resp as? HTTPURLResponse, http.statusCode == 200 {
-                    // Discover PID of the running mlx_lm process
-                    let pid = findMLXServerPID()
+                    let pid = Int(proc.processIdentifier)
                     serverStatus = ServerStatus(state: .running, modelName: model.id, port: serverStatus.port, pid: pid)
-                    serverLog.append("Server ready. PID: \(pid ?? 0)")
+                    serverLog.append("Server ready. PID: \(pid)")
                     return
                 }
             }
@@ -223,31 +289,20 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Find the PID of the running mlx_lm.server process.
-    private func findMLXServerPID() -> Int? {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        task.arguments = ["-f", "mlx_lm"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-        try? task.run()
-        task.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let str = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              let pid = Int(str.components(separatedBy: "\n").first ?? "") else { return nil }
-        return pid
-    }
-
     func stopServer() {
-        // Kill the detached mlx_lm.server process by PID or pattern
-        let killTask = Process()
-        killTask.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        killTask.arguments = ["-f", "mlx_lm"]
-        killTask.standardOutput = FileHandle.nullDevice
-        killTask.standardError = FileHandle.nullDevice
-        try? killTask.run()
-        killTask.waitUntilExit()
+        if let proc = mlxServerProcess, proc.isRunning {
+            proc.terminate()
+            proc.waitUntilExit()
+        } else if let pid = serverStatus.pid {
+            let killTask = Process()
+            killTask.executableURL = URL(fileURLWithPath: "/bin/kill")
+            killTask.arguments = [String(pid)]
+            killTask.standardOutput = FileHandle.nullDevice
+            killTask.standardError = FileHandle.nullDevice
+            try? killTask.run()
+            killTask.waitUntilExit()
+        }
+        mlxServerProcess = nil
 
         serverStatus = ServerStatus(state: .stopped, port: serverStatus.port)
         serverLog.append("Server stopped.")
@@ -261,16 +316,15 @@ class AppState: ObservableObject {
         }
     }
 
-    private func serverStartCommand(model: MLXModel, profile: GenerationProfile) -> String {
-        let python = "\(venvDir)/bin/python3"
+    private func serverStartArguments(model: MLXModel, profile: GenerationProfile) -> [String] {
         var args = [
-            shellQuote(python), "-m", "mlx_lm", "server",
-            "--model", shellQuote(modelPath(for: model)),
-            "--port", shellQuote(String(serverStatus.port)),
+            "-m", "mlx_lm", "server",
+            "--model", modelPath(for: model),
+            "--port", String(serverStatus.port),
         ]
-        args.append(contentsOf: serverParameterArguments(model: model, profile: profile).map(shellQuote))
-        args.append(contentsOf: splitShellWords(extraMLXServerArguments).map(shellQuote))
-        return "nohup \(args.joined(separator: " ")) > /tmp/mlx-server.log 2>&1 &"
+        args.append(contentsOf: serverParameterArguments(model: model, profile: profile))
+        args.append(contentsOf: splitShellWords(extraMLXServerArguments))
+        return args
     }
 
     private func serverParameterArguments(model: MLXModel, profile: GenerationProfile) -> [String] {
@@ -390,11 +444,8 @@ class AppState: ObservableObject {
             stopInterposer()
         }
 
-        let config = EngraveConfig.forLocalMLX(
-            model: model.id,
-            backendPort: UInt16(serverStatus.port),
-            proxyPort: interposerPort
-        )
+        let config = engraveConfig(for: model)
+        interposerTarget = targetDescription(for: model)
 
         // Set up governance if enabled
         var bridge: GovernanceBridge? = nil
@@ -443,6 +494,89 @@ class AppState: ObservableObject {
         }
     }
 
+    private func engraveConfig(for model: MLXModel) -> EngraveConfig {
+        let route = routeTarget(for: model)
+        return EngraveConfig(
+            server: EngraveConfig.ServerConfig(port: interposerPort),
+            routes: EngraveConfig.RouteConfig(defaults: [
+                "anthropic": route,
+                "openai": route,
+                "openai_compatible": route,
+                "gemini": route,
+            ]),
+            providers: [route.provider ?? route.backend: providerConfig(for: model)]
+        )
+    }
+
+    private func routeTarget(for model: MLXModel) -> EngraveConfig.RouteTarget {
+        switch model.source {
+        case .local, .network:
+            return EngraveConfig.RouteTarget(backend: "local", model: model.id, provider: "selected")
+        case .anthropic:
+            return EngraveConfig.RouteTarget(backend: "anthropic", model: model.id, provider: "selected")
+        case .openai:
+            return EngraveConfig.RouteTarget(backend: "openai", model: model.id, provider: "selected")
+        case .google:
+            return EngraveConfig.RouteTarget(backend: "gemini", model: model.id, provider: "selected")
+        }
+    }
+
+    private func providerConfig(for model: MLXModel) -> EngraveConfig.ProviderConfig {
+        switch model.source {
+        case .local:
+            return EngraveConfig.ProviderConfig(
+                type: "chat_completions",
+                baseURL: "http://localhost:\(serverStatus.port)",
+                apiKeyEnv: "MLX_LAUNCHER_API_KEY",
+                models: [model.id]
+            )
+        case .network:
+            let baseURL = "http://\(model.networkHost ?? "localhost"):\(model.networkPort ?? 1234)"
+            return EngraveConfig.ProviderConfig(
+                type: "chat_completions",
+                baseURL: baseURL,
+                apiKeyEnv: "MLX_LAUNCHER_API_KEY",
+                models: [model.id]
+            )
+        case .anthropic:
+            return EngraveConfig.ProviderConfig(
+                type: "anthropic",
+                baseURL: "https://api.anthropic.com",
+                apiKeyEnv: "ANTHROPIC_API_KEY",
+                models: [model.id]
+            )
+        case .openai:
+            return EngraveConfig.ProviderConfig(
+                type: "openai",
+                baseURL: "https://api.openai.com",
+                apiKeyEnv: "OPENAI_API_KEY",
+                models: [model.id]
+            )
+        case .google:
+            return EngraveConfig.ProviderConfig(
+                type: "gemini",
+                baseURL: "https://generativelanguage.googleapis.com",
+                apiKeyEnv: "GOOGLE_API_KEY",
+                models: [model.id]
+            )
+        }
+    }
+
+    private func targetDescription(for model: MLXModel) -> String {
+        switch model.source {
+        case .local:
+            return "local MLX \(model.id) via :\(serverStatus.port)"
+        case .network:
+            return "network MLX \(model.networkHost ?? "localhost"):\(model.networkPort ?? 1234) → \(model.id)"
+        case .anthropic:
+            return "Anthropic \(model.id)"
+        case .openai:
+            return "OpenAI \(model.id)"
+        case .google:
+            return "Gemini \(model.id)"
+        }
+    }
+
     func stopInterposer() {
         logStreamTask?.cancel()
         logStreamTask = nil
@@ -467,6 +601,7 @@ class AppState: ObservableObject {
         // Save to disk
         let path = "\(configDir)/governance.json"
         try? config.save(to: path)
+        writeGovernanceArtifacts(config)
         // Update engine if running
         if let engine = policyEngine {
             Task { await engine.updateConfig(config) }
@@ -479,6 +614,7 @@ class AppState: ObservableObject {
         if let config = try? GovernanceConfig.load(from: path) {
             governanceConfig = config
             governanceEnabled = config.enabled
+            writeGovernanceArtifacts(config)
         }
     }
 
@@ -555,6 +691,7 @@ class AppState: ObservableObject {
 
     func updateSettings(for runner: Runner, _ settings: RunnerLaunchSettings) {
         runnerSettings[runner.id] = settings
+        saveRunnerSettings()
     }
 
     func runnerArguments(for runner: Runner) -> [String] {
@@ -576,7 +713,8 @@ class AppState: ObservableObject {
     func commandPreview() -> String {
         guard let model = selectedModel else { return "" }
         let command = runnerCommand(model: model, runner: selectedRunner, userArgs: runnerArguments(for: selectedRunner))
-        return (["cd", shellQuote(settings(for: selectedRunner).workingDirectory), "&&"] + command.environment.map { "\($0.key)=\(shellQuote($0.value))" } + command.arguments.map(shellQuote)).joined(separator: " ")
+        let environment = command.environment.merging(governanceRunnerEnvironment()) { current, _ in current }
+        return (["cd", shellQuote(settings(for: selectedRunner).workingDirectory), "&&"] + environment.map { "\($0.key)=\(shellQuote($0.value))" } + command.arguments.map(shellQuote)).joined(separator: " ")
     }
 
     // MARK: - System Prompts
@@ -599,27 +737,32 @@ class AppState: ObservableObject {
         let settings = settings(for: runner)
         let userArgs = runnerArguments(for: runner)
         let command = runnerCommand(model: model, runner: runner, userArgs: userArgs)
+        let usesInterposer = shouldUseInterposer(runner: runner, model: model)
 
         if model.source == .local {
             if serverStatus.state != .running || runningServerDoesNotMatch(model) {
                 startServer(model: model)
             }
         }
-        if runner.needsProxy || model.source != .local {
+        if usesInterposer {
             startInterposer()
         }
 
-        let envExports = command.environment.map { key, value in
+        let environment = command.environment.merging(governanceRunnerEnvironment()) { current, _ in current }
+        let envExports = environment.map { key, value in
             "export \(key)=\(shellQuote(value))"
         }
         let pathExport = "export PATH=\"\(mlxBinDir):/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.local/bin:\(NSHomeDirectory())/.cargo/bin:$PATH\""
         let waitForMLX = model.source == .local
             ? "until curl -fsS \(shellQuote("http://localhost:\(serverStatus.port)/v1/models")) >/dev/null 2>&1; do sleep 1; done"
             : ""
+        let waitForInterposer = usesInterposer
+            ? "until curl -fsS \(shellQuote("http://localhost:\(interposerPort)/health")) >/dev/null 2>&1; do sleep 1; done"
+            : ""
         let pieces = [
             "cd \(shellQuote(settings.workingDirectory))",
             pathExport,
-        ] + envExports + [waitForMLX, command.arguments.map(shellQuote).joined(separator: " ")]
+        ] + envExports + [waitForMLX, waitForInterposer, command.arguments.map(shellQuote).joined(separator: " ")]
         let shellCommand = pieces.filter { !$0.isEmpty }.joined(separator: " && ")
 
         let terminalCommand = "/bin/bash -lc \(shellQuote(shellCommand))"
@@ -643,7 +786,9 @@ class AppState: ObservableObject {
 
     private func runnerCommand(model: MLXModel, runner: Runner, userArgs: [String]) -> (environment: [String: String], arguments: [String]) {
         let modelName = model.source == .local ? model.id : model.id
-        let modelId = serverStatus.modelName ?? modelName
+        let modelId = model.source == .local ? (serverStatus.modelName ?? modelName) : modelName
+        let usesInterposer = shouldUseInterposer(runner: runner, model: model)
+        let openAIBaseURL = usesInterposer ? "http://localhost:\(interposerPort)/v1" : "http://localhost:\(serverStatus.port)/v1"
 
         switch runner.id {
         case "claude":
@@ -653,8 +798,14 @@ class AppState: ObservableObject {
                 !hasFlag(userArgs, "--append-system-prompt") {
                 args += ["--append-system-prompt", activeProfile.system_prompt]
             }
+            if !hasFlag(userArgs, "--append-system-prompt"),
+               !hasFlag(userArgs, "--system-prompt"),
+               governanceConfig.isFeatureEnabled(.subAgentLaunchControl) || governanceConfig.isFeatureEnabled(.workflowTaskDAG) {
+                args += ["--append-system-prompt", governanceRunnerInstruction()]
+            }
             return ([
                 "ANTHROPIC_BASE_URL": "http://localhost:\(interposerPort)",
+                "ANTHROPIC_API_KEY": "mlx-local",
             ], ["claude"] + args)
         case "codex":
             return ([
@@ -662,25 +813,167 @@ class AppState: ObservableObject {
                 "OPENAI_API_KEY": "mlx-local",
             ], ["codex"] + defaultCodexArgs(userArgs, model: modelId) + userArgs)
         case "gemini":
+            let geminiArgs = defaultGeminiArgs(userArgs, model: modelName) + userArgs
             return ([
                 "GOOGLE_GEMINI_BASE_URL": "http://localhost:\(interposerPort)",
+                "GEMINI_API_KEY": "mlx-local",
                 "GOOGLE_API_KEY": "mlx-local",
-            ], ["gemini"] + defaultModelArgs(userArgs, flag: "--model", model: modelName) + userArgs)
+            ], ["gemini"] + geminiArgs)
         case "aider":
             return ([:], [
                 "aider",
-                "--openai-api-base", "http://localhost:\(serverStatus.port)/v1",
+                "--openai-api-base", openAIBaseURL,
                 "--openai-api-key", "mlx-local",
                 "--model", "openai/\(modelId)",
             ] + userArgs)
         case "gptme":
             return ([
-                "OPENAI_BASE_URL": "http://localhost:\(serverStatus.port)/v1",
+                "OPENAI_BASE_URL": openAIBaseURL,
                 "OPENAI_API_KEY": "mlx-local",
             ], ["gptme"] + defaultModelArgs(userArgs, flag: "--model", model: modelName) + userArgs)
         default:
             return ([:], [runner.binary] + userArgs)
         }
+    }
+
+    private func shouldUseInterposer(runner: Runner, model: MLXModel) -> Bool {
+        runner.needsProxy || model.source != .local
+    }
+
+    // MARK: - Persistence
+
+    private func loadRunnerSettings() {
+        let path = "\(configDir)/runner-settings.json"
+        guard let data = FileManager.default.contents(atPath: path),
+              let loaded = try? JSONDecoder().decode([String: RunnerLaunchSettings].self, from: data) else {
+            return
+        }
+        runnerSettings.merge(loaded) { _, new in new }
+    }
+
+    private func saveRunnerSettings() {
+        let path = "\(configDir)/runner-settings.json"
+        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(runnerSettings) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    private func loadModelStoreSettings() {
+        let path = "\(configDir)/model-store.json"
+        guard let data = FileManager.default.contents(atPath: path),
+              let settings = try? JSONDecoder().decode(ModelStoreSettings.self, from: data),
+              !settings.scanDirectories.isEmpty else {
+            return
+        }
+        modelStore.scanDirectories = settings.scanDirectories
+    }
+
+    func saveModelStoreSettings() {
+        let path = "\(configDir)/model-store.json"
+        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
+        let settings = ModelStoreSettings(scanDirectories: modelStore.scanDirectories)
+        if let data = try? JSONEncoder().encode(settings) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    private struct ModelStoreSettings: Codable {
+        let scanDirectories: [String]
+    }
+
+    // MARK: - Governance Artifacts
+
+    private func writeGovernanceArtifacts(_ config: GovernanceConfig) {
+        let dir = "\(configDir)/governance"
+        try? FileManager.default.createDirectory(atPath: "\(dir)/hooks", withIntermediateDirectories: true)
+        try? governanceBrief(config).write(toFile: "\(dir)/engrave-governance-brief.md", atomically: true, encoding: .utf8)
+        try? geminiPolicy(config).write(toFile: "\(dir)/gemini-policy.md", atomically: true, encoding: .utf8)
+        try? preCommitHook(config).write(toFile: "\(dir)/hooks/pre-commit", atomically: true, encoding: .utf8)
+        try? sessionCloseHook(config).write(toFile: "\(dir)/hooks/session-close-check", atomically: true, encoding: .utf8)
+        _ = chmod("\(dir)/hooks/pre-commit", 0o755)
+        _ = chmod("\(dir)/hooks/session-close-check", 0o755)
+    }
+
+    private func governanceBrief(_ config: GovernanceConfig) -> String {
+        let enabledFeatures = GovernanceFeature.allCases.filter { config.isFeatureEnabled($0) }
+        let budgets = config.contextBudgets ?? ContextBudget.defaults
+        let uia = config.uiaConfig ?? .default
+        return """
+        # Engrave Governance Brief
+
+        Governance is \(config.enabled ? "enabled" : "disabled").
+
+        ## Active Features
+        \(enabledFeatures.map { "- \($0.title): \($0.description)" }.joined(separator: "\n"))
+
+        ## UIA
+        - Orchestrator model: \(uia.orchestratorModel)
+        - Cheap model: \(uia.cheapModel)
+        - Local model: \(uia.localModel)
+        - Explain work to user: \(uia.explainWorkToUser)
+        - Create task DAG: \(uia.createTaskDAG)
+        - Steer sub-agents: \(uia.steerSubAgents)
+
+        ## Context Budgets
+        \(budgets.sorted { $0.key < $1.key }.map { "- \($0.key): \($0.value.maxTokens.map(String.init) ?? "percentage-only") tokens at \(Int($0.value.thresholdPercent * 100))%, relay=\($0.value.relayModel), handoff=\($0.value.handoffStyle)" }.joined(separator: "\n"))
+
+        ## Packaged Rules
+        \(config.rules.map { "- [\($0.enabled ? "x" : " ")] \($0.name) (\($0.trigger.rawValue)/\($0.severity.rawValue)): \($0.description ?? "")" }.joined(separator: "\n"))
+        """
+    }
+
+    private func geminiPolicy(_ config: GovernanceConfig) -> String {
+        governanceBrief(config) + """
+
+        ## Runner Policy
+        - Decompose multi-step work into a task DAG before spawning agents.
+        - Route sub-agents to the cheapest model that can safely complete their scope.
+        - Create a detailed handoff brief before context exhaustion.
+        - Hold incoming/outgoing messages when human-in-the-loop interception is enabled.
+        - Keep commits atomic and branches single-concern.
+        - Add positive and negative tests for behavior changes.
+        - Document every mock, stub, scaffold, placeholder, or TODO-only implementation.
+        """
+    }
+
+    private func preCommitHook(_ config: GovernanceConfig) -> String {
+        """
+        #!/bin/sh
+        # Generated by MLX Launcher / Engrave governance.
+        set -eu
+        files="$(git diff --cached --name-only)"
+        if [ -z "$files" ]; then
+          echo "No staged files."
+          exit 1
+        fi
+        if echo "$files" | grep -E '(^|/)(\\.env|credentials|secrets\\.)' >/dev/null; then
+          echo "Engrave governance: refusing commit containing sensitive paths."
+          exit 1
+        fi
+        if git diff --cached | grep -Ei '\\b(mock|stub|scaffold|placeholder|TODO|fake)\\b' >/dev/null; then
+          echo "Engrave governance warning: mocks/stubs/scaffolds/TODOs detected. Document intent before committing."
+        fi
+        if git diff --cached --name-only | grep -E '(Sources|Engrave/Sources)' >/dev/null &&
+           ! git diff --cached --name-only | grep -E '(^Tests/|Tests/|test|spec)' >/dev/null; then
+          echo "Engrave governance warning: code changed without staged tests."
+        fi
+        exit 0
+        """
+    }
+
+    private func sessionCloseHook(_ config: GovernanceConfig) -> String {
+        """
+        #!/bin/sh
+        # Generated by MLX Launcher / Engrave governance.
+        set -eu
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+          echo "Engrave governance: worktree has uncommitted changes."
+          git status --short
+          exit 1
+        fi
+        exit 0
+        """
     }
 
     private func runningServerDoesNotMatch(_ model: MLXModel) -> Bool {
@@ -693,7 +986,39 @@ class AppState: ObservableObject {
     }
 
     private func defaultCodexArgs(_ userArgs: [String], model: String) -> [String] {
-        hasFlag(userArgs, "--model") || userArgs.contains("-m") || userArgs.contains("-c") ? [] : ["-c", "model=\"\(model)\""]
+        var args: [String] = []
+        if !hasFlag(userArgs, "--model") && !userArgs.contains("-m") {
+            args += ["-m", model]
+        }
+        if !userArgs.contains("-c") {
+            args += [
+                "-c", "model_provider=\"mlx\"",
+                "-c", "model_providers.mlx={name=\"MLX via Engrave\",base_url=\"http://localhost:\(interposerPort)/v1\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\"}",
+            ]
+        }
+        return args
+    }
+
+    private func defaultGeminiArgs(_ userArgs: [String], model: String) -> [String] {
+        var args = defaultModelArgs(userArgs, flag: "-m", model: model)
+        if !hasFlag(userArgs, "--policy") {
+            args += ["--policy", "\(configDir)/governance/gemini-policy.md"]
+        }
+        return args
+    }
+
+    private func governanceRunnerEnvironment() -> [String: String] {
+        [
+            "ENGRAVE_GOVERNANCE_ENABLED": governanceConfig.enabled ? "1" : "0",
+            "ENGRAVE_GOVERNANCE_BRIEF": "\(configDir)/governance/engrave-governance-brief.md",
+            "ENGRAVE_GOVERNANCE_POLICY": "\(configDir)/governance/gemini-policy.md",
+            "ENGRAVE_INTERPOSER_URL": "http://localhost:\(interposerPort)",
+            "ENGRAVE_ALL_AGENTS_THROUGH_INTERPOSER": "1",
+        ]
+    }
+
+    private func governanceRunnerInstruction() -> String {
+        "Route all model traffic, sub-agent launches, context relay, human-in-the-loop holds, workflow DAG updates, and governance steering through Engrave. Prefer local or cheap models for bounded sub-agent work when safe."
     }
 
     private func hasFlag(_ args: [String], _ flag: String) -> Bool {
@@ -701,7 +1026,8 @@ class AppState: ObservableObject {
     }
 
     private func modelPath(for model: MLXModel) -> String {
-        "\(modelsDir)/\(model.id)"
+        if let localPath = model.localPath, !localPath.isEmpty { return localPath }
+        return "\(modelsDir)/\(model.id)"
     }
 
     private func shellQuote(_ value: String) -> String {

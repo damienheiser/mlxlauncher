@@ -112,7 +112,6 @@ public actor BackendClient {
 
         var modifiedRequest = canonicalRequest
         modifiedRequest.model = route.model
-        modifiedRequest.stream = true
 
         switch backendType {
         case "anthropic":
@@ -130,8 +129,12 @@ public actor BackendClient {
 
         case "gemini":
             let model = route.model
-            var urlStr = "\(baseURL)/v1/models/\(model):streamGenerateContent?alt=sse"
-            if let key = apiKey { urlStr += "&key=\(key)" }
+            let verb = modifiedRequest.stream ? "streamGenerateContent" : "generateContent"
+            var urlStr = "\(baseURL)/v1/models/\(model):\(verb)"
+            if modifiedRequest.stream { urlStr += "?alt=sse" }
+            if let key = apiKey {
+                urlStr += modifiedRequest.stream ? "&key=\(key)" : "?key=\(key)"
+            }
             guard let url = URL(string: urlStr) else { return nil }
             endpointURL = url
             requestBody = MessageTranslator.canonicalToGeminiBody(modifiedRequest)

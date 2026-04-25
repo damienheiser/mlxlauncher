@@ -7,6 +7,7 @@ class WebServer {
     let appState: AppState
     private var serverFd: Int32 = -1
     private let queue = DispatchQueue(label: "mlx.webserver", attributes: .concurrent)
+    private let maxRequestBytes = 10 * 1024 * 1024
 
     init(port: UInt16, appState: AppState) {
         self.port = port
@@ -45,11 +46,11 @@ class WebServer {
     }
 
     private func handleClient(_ fd: Int32) {
-        var buffer = [UInt8](repeating: 0, count: 65536)
-        let n = recv(fd, &buffer, buffer.count, 0)
-        guard n > 0 else { close(fd); return }
-
-        let raw = String(bytes: buffer[0..<n], encoding: .utf8) ?? ""
+        guard let requestData = readRequest(from: fd),
+              let raw = String(data: requestData, encoding: .utf8) else {
+            sendRawResponse(fd: fd, status: 400, contentType: "application/json", body: #"{"error":"invalid request"}"#)
+            return
+        }
         let (method, path) = parseRequestLine(raw)
         let body = extractBody(raw)
 
@@ -63,23 +64,84 @@ class WebServer {
             response = (404, "application/json", #"{"error":"not found"}"#)
         }
 
-        let (status, contentType, respBody) = response
-        let statusText = status == 200 ? "OK" : (status == 404 ? "Not Found" : "Bad Request")
+        sendRawResponse(fd: fd, status: response.0, contentType: response.1, body: response.2)
+    }
+
+    private func readRequest(from fd: Int32) -> Data? {
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        var expectedTotal: Int?
+
+        while data.count < maxRequestBytes {
+            let n = recv(fd, &buffer, buffer.count, 0)
+            guard n > 0 else { break }
+            data.append(buffer, count: n)
+
+            if expectedTotal == nil {
+                expectedTotal = requestExpectedTotalBytes(data)
+            }
+            if let expectedTotal, data.count >= expectedTotal {
+                return data
+            }
+            if expectedTotal == nil, requestHeaderEndIndex(data) != nil {
+                return data
+            }
+        }
+
+        return data.isEmpty || data.count >= maxRequestBytes ? nil : data
+    }
+
+    private func requestExpectedTotalBytes(_ data: Data) -> Int? {
+        guard let headerEnd = requestHeaderEndIndex(data) else { return nil }
+        let headerData = data.prefix(headerEnd)
+        guard let header = String(data: headerData, encoding: .utf8) else { return nil }
+        let contentLength = header
+            .components(separatedBy: "\n")
+            .compactMap { line -> Int? in
+                let parts = line.split(separator: ":", maxSplits: 1)
+                guard parts.count == 2,
+                      parts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "content-length" else {
+                    return nil
+                }
+                return Int(parts[1].trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            .first ?? 0
+        return headerEnd + 4 + contentLength
+    }
+
+    private func requestHeaderEndIndex(_ data: Data) -> Int? {
+        let needle = Data([13, 10, 13, 10])
+        guard let range = data.range(of: needle) else { return nil }
+        return range.lowerBound
+    }
+
+    private func sendRawResponse(fd: Int32, status: Int, contentType: String, body: String) {
+        let statusText = statusText(for: status)
         let httpResponse = """
         HTTP/1.1 \(status) \(statusText)\r
         Content-Type: \(contentType); charset=utf-8\r
-        Content-Length: \(respBody.utf8.count)\r
+        Content-Length: \(body.utf8.count)\r
         Access-Control-Allow-Origin: *\r
         Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r
         Access-Control-Allow-Headers: Content-Type\r
         Connection: close\r
         \r
-        \(respBody)
+        \(body)
         """
 
         let data = Array(httpResponse.utf8)
         _ = send(fd, data, data.count, 0)
         close(fd)
+    }
+
+    private func statusText(for status: Int) -> String {
+        switch status {
+        case 200: return "OK"
+        case 204: return "No Content"
+        case 400: return "Bad Request"
+        case 404: return "Not Found"
+        default: return "Error"
+        }
     }
 
     private func parseRequestLine(_ raw: String) -> (String, String) {
@@ -136,7 +198,8 @@ class WebServer {
                 models.append([
                     "id": m.id, "index": m.index, "size": m.size,
                     "source": m.source.rawValue, "shortName": m.shortName,
-                    "provider": m.providerBadge
+                    "provider": m.providerBadge,
+                    "launchIdentity": m.launchIdentity
                 ])
             }
         }
@@ -195,8 +258,15 @@ class WebServer {
               let modelId = json["model"] as? String else {
             return (400, "application/json", #"{"error":"missing model field"}"#)
         }
+        var didFindModel = false
+        DispatchQueue.main.sync {
+            didFindModel = self.appState.allModels.contains(where: { $0.id == modelId || $0.launchIdentity == modelId })
+        }
+        guard didFindModel else {
+            return (404, "application/json", #"{"error":"model not found"}"#)
+        }
         DispatchQueue.main.async {
-            if let model = self.appState.allModels.first(where: { $0.id == modelId }) {
+            if let model = self.appState.allModels.first(where: { $0.id == modelId || $0.launchIdentity == modelId }) {
                 self.appState.startServer(model: model)
             }
         }
@@ -210,9 +280,19 @@ class WebServer {
               let runnerId = json["runner"] as? String else {
             return (400, "application/json", #"{"error":"missing model or runner"}"#)
         }
-        DispatchQueue.main.async {
-           if let model = self.appState.allModels.first(where: { $0.id == modelId }),
+        var selected: (MLXModel, Runner)?
+        DispatchQueue.main.sync {
+           if let model = self.appState.allModels.first(where: { $0.id == modelId || $0.launchIdentity == modelId }),
                let runner = allRunners.first(where: { $0.id == runnerId }) {
+                selected = (model, runner)
+            }
+        }
+        guard let selected else {
+            return (404, "application/json", #"{"error":"model or runner not found"}"#)
+        }
+        DispatchQueue.main.async {
+                let model = selected.0
+                let runner = selected.1
                 self.appState.selectedModel = model
                 self.appState.selectedRunner = runner
                 var settings = self.appState.settings(for: runner)
@@ -226,7 +306,6 @@ class WebServer {
                 }
                 self.appState.updateSettings(for: runner, settings)
                 self.appState.launch()
-            }
         }
         return (200, "application/json", #"{"ok":true}"#)
     }

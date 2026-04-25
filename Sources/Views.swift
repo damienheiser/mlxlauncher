@@ -204,7 +204,7 @@ struct ModelListView: View {
             switch sourceFilter {
             case .all: f = true
             case .local: f = m.source == .local
-            case .cloud: f = m.source != .local
+            case .cloud: f = m.isCloud
             }
             return s && f
         }
@@ -272,7 +272,7 @@ struct ModelRow: View {
     }
     var srcColor: Color {
         switch model.source {
-        case .local: return .teal; case .anthropic: return .orange
+        case .local: return .teal; case .network: return .purple; case .anthropic: return .orange
         case .openai: return .green; case .google: return .blue
         }
     }
@@ -859,12 +859,13 @@ struct ModelStorePanel: View {
             if showAddDir {
                 HStack(spacing: 4) {
                     TextField("Path...", text: $newDirPath).textFieldStyle(.roundedBorder).font(.system(size: 10))
-                    Button("Add") {
-                        if !newDirPath.isEmpty {
-                            state.modelStore.addScanDirectory(newDirPath)
-                            newDirPath = ""
-                            showAddDir = false
-                        }
+	                    Button("Add") {
+	                        if !newDirPath.isEmpty {
+	                            state.modelStore.addScanDirectory(newDirPath)
+	                            state.saveModelStoreSettings()
+	                            newDirPath = ""
+	                            showAddDir = false
+	                        }
                     }.buttonStyle(.bordered).controlSize(.mini)
                 }.padding(.horizontal, 12).padding(.bottom, 4)
             }
@@ -874,9 +875,12 @@ struct ModelStorePanel: View {
                     ForEach(state.modelStore.scanDirectories, id: \.self) { dir in
                         HStack(spacing: 2) {
                             Text(abbreviatePath(dir)).font(.system(size: 8, design: .monospaced))
-                            Button { state.modelStore.removeScanDirectory(dir) } label: {
-                                Image(systemName: "xmark").font(.system(size: 7))
-                            }.buttonStyle(.borderless)
+	                            Button {
+	                                state.modelStore.removeScanDirectory(dir)
+	                                state.saveModelStoreSettings()
+	                            } label: {
+	                                Image(systemName: "xmark").font(.system(size: 7))
+	                            }.buttonStyle(.borderless)
                         }
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 3))
@@ -929,6 +933,12 @@ struct ModelStorePanel: View {
                 Text(arch).font(.system(size: 8)).foregroundStyle(.secondary)
             }
             Text(model.size).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+            Button {
+                state.selectDiscoveredModel(model)
+            } label: {
+                Text(state.selectedModel?.launchIdentity == model.launchIdentity ? "Loaded" : "Load")
+                    .font(.system(size: 9, weight: .medium))
+            }.buttonStyle(.borderless)
             Button {
                 state.modelStore.deleteModel(model)
             } label: {
@@ -985,10 +995,16 @@ struct ModelStorePanel: View {
                                     Text("\(model.networkHost ?? ""):\(model.networkPort ?? 0)")
                                         .font(.system(size: 8, design: .monospaced)).foregroundStyle(.tertiary)
                                 }
-                                Spacer()
-                                Text("Network").font(.system(size: 8)).foregroundStyle(.blue)
-                            }.padding(.horizontal, 12).padding(.vertical, 5)
-                        }
+	                                Spacer()
+	                                Text("Network").font(.system(size: 8)).foregroundStyle(.blue)
+	                                Button {
+	                                    state.selectDiscoveredModel(model)
+	                                } label: {
+	                                    Text(state.selectedModel?.launchIdentity == model.launchIdentity ? "Loaded" : "Load")
+	                                        .font(.system(size: 9, weight: .medium))
+	                                }.buttonStyle(.borderless)
+	                            }.padding(.horizontal, 12).padding(.vertical, 5)
+	                        }
                     }
                 }
             }
@@ -1118,6 +1134,9 @@ struct GovernancePanel: View {
                     enableSection
                     if state.governanceConfig.enabled {
                         sandboxSection
+                        featureTogglesSection
+                        uiaSection
+                        contextBudgetSection
                         rulesSection
                         toolInterceptionSection
                         presetsSection
@@ -1174,6 +1193,94 @@ struct GovernancePanel: View {
         case .sandbox: return "Read-only tools allowed. Write operations blocked."
         case .workspace: return "Read-write within project directory. System access restricted."
         case .full: return "Full system access. Use with caution."
+        }
+    }
+
+    // MARK: - Packaged Governance
+
+    private var featureTogglesSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Packaged Governance").font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Button("Install Rules") { installPackagedRules() }
+                    .buttonStyle(.bordered).controlSize(.mini)
+            }
+
+            Text("All runner and sub-agent traffic is expected to route through Engrave; these toggles control generated runner policy and packaged rules.")
+                .font(.system(size: 9)).foregroundStyle(.tertiary)
+
+            ForEach(GovernanceFeature.allCases) { feature in
+                Toggle(isOn: Binding(
+                    get: { state.governanceConfig.isFeatureEnabled(feature) },
+                    set: { enabled in
+                        var config = state.governanceConfig
+                        config.setFeature(feature, enabled: enabled)
+                        state.updateGovernanceConfig(config)
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(feature.title).font(.system(size: 10, weight: .medium))
+                        Text(feature.description).font(.system(size: 8)).foregroundStyle(.tertiary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+            }
+        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var uiaSection: some View {
+        let uia = state.governanceConfig.uiaConfig ?? .default
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("Engrave UIA").font(.system(size: 11, weight: .semibold))
+            Text("User-facing orchestrator for prompt decomposition, workflow DAGs, sub-agent launch steering, and progress reporting.")
+                .font(.system(size: 9)).foregroundStyle(.tertiary)
+            HStack(spacing: 8) {
+                GChip(label: "Orchestrator", value: uia.orchestratorModel)
+                GChip(label: "Cheap", value: uia.cheapModel)
+                GChip(label: "Local", value: uia.localModel)
+            }
+            HStack(spacing: 8) {
+                Label(uia.explainWorkToUser ? "User Updates" : "Silent", systemImage: "bubble.left.and.text.bubble.right")
+                Label(uia.createTaskDAG ? "Task DAG" : "No DAG", systemImage: "point.3.connected.trianglepath.dotted")
+                Label(uia.steerSubAgents ? "Steers Agents" : "No Steering", systemImage: "arrow.triangle.branch")
+            }
+            .font(.system(size: 9)).foregroundStyle(.secondary)
+        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var contextBudgetSection: some View {
+        let budgets = state.governanceConfig.contextBudgets ?? ContextBudget.defaults
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("Context Exhaustion Relay").font(.system(size: 11, weight: .semibold))
+            Text("Budgets trigger a local/cheap relay agent to compact context into a handoff brief before replacement agents continue.")
+                .font(.system(size: 9)).foregroundStyle(.tertiary)
+            ForEach(budgets.keys.sorted(), id: \.self) { key in
+                if let budget = budgets[key] {
+                    HStack {
+                        Text(key).font(.system(size: 9, weight: .medium, design: .monospaced))
+                        Spacer()
+                        Text("\(budget.maxTokens.map(String.init) ?? "—") tokens @ \(Int(budget.thresholdPercent * 100))%")
+                            .font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
+                        Text(budget.relayModel).font(.system(size: 8)).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private struct GChip: View {
+        let label: String
+        let value: String
+        var body: some View {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.system(size: 7, weight: .medium)).foregroundStyle(.tertiary)
+                Text(value).font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(.quaternary.opacity(0.2))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
         }
     }
 
@@ -1355,6 +1462,15 @@ struct GovernancePanel: View {
                     .buttonStyle(.bordered).controlSize(.small)
                 Button("Minimal") { state.updateGovernanceConfig(.minimal) }
                     .buttonStyle(.bordered).controlSize(.small)
+                Button("Packaged") {
+                    var config = state.governanceConfig
+                    config.enabled = true
+                    config.rules = mergeRules(config.rules, with: PolicyRule.packagedGovernanceRules)
+                    config.featureToggles = GovernanceFeature.defaults(enabled: true)
+                    config.contextBudgets = ContextBudget.defaults
+                    config.uiaConfig = .default
+                    state.updateGovernanceConfig(config)
+                }.buttonStyle(.bordered).controlSize(.small)
                 Button("Clear All") {
                     var config = GovernanceConfig()
                     config.enabled = true
@@ -1420,6 +1536,31 @@ struct GovernancePanel: View {
         ))
         state.updateGovernanceConfig(config)
     }
+
+    private func installPackagedRules() {
+        var config = state.governanceConfig
+        config.rules = mergeRules(config.rules, with: PolicyRule.packagedGovernanceRules)
+        if config.featureToggles == nil {
+            config.featureToggles = GovernanceFeature.defaults(enabled: true)
+        }
+        if config.contextBudgets == nil {
+            config.contextBudgets = ContextBudget.defaults
+        }
+        if config.uiaConfig == nil {
+            config.uiaConfig = .default
+        }
+        state.updateGovernanceConfig(config)
+    }
+
+    private func mergeRules(_ existing: [PolicyRule], with incoming: [PolicyRule]) -> [PolicyRule] {
+        var names = Set(existing.map(\.name))
+        var merged = existing
+        for rule in incoming where !names.contains(rule.name) {
+            merged.append(rule)
+            names.insert(rule.name)
+        }
+        return merged
+    }
 }
 
 // MARK: - Flow Layout (for tag chips)
@@ -1470,6 +1611,10 @@ struct InterposerPanel: View {
                     Text("Engrave Interposer").font(.system(size: 14, weight: .semibold))
                     Text("port \(state.interposerPort) — Anthropic · OpenAI · Gemini")
                         .font(.system(size: 9, design: .monospaced)).foregroundStyle(.quaternary)
+                    Text(state.interposerTarget)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(state.interposerRunning ? .green : .secondary)
+                        .lineLimit(1)
                 }
                 Spacer()
                 HStack(spacing: 4) {

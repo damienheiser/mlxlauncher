@@ -7,12 +7,32 @@ struct MLXModel: Identifiable, Hashable, Codable {
     let index: Int
     let size: String
     let source: ModelSource
+    let localPath: String?
+    let networkHost: String?
+    let networkPort: UInt16?
+
+    init(id: String, index: Int, size: String, source: ModelSource, localPath: String? = nil, networkHost: String? = nil, networkPort: UInt16? = nil) {
+        self.id = id
+        self.index = index
+        self.size = size
+        self.source = source
+        self.localPath = localPath
+        self.networkHost = networkHost
+        self.networkPort = networkPort
+    }
 
     var shortName: String {
         id.components(separatedBy: "/").last ?? id
     }
 
-    var isCloud: Bool { source != .local }
+    var isCloud: Bool { source == .anthropic || source == .openai || source == .google }
+    var isNetwork: Bool { source == .network }
+
+    var launchIdentity: String {
+        if let localPath { return "local:\(localPath)" }
+        if let networkHost, let networkPort { return "network:\(networkHost):\(networkPort)/\(id)" }
+        return "\(source.rawValue):\(id)"
+    }
 
     var huggingFaceURL: URL? {
         guard source == .local else { return nil }
@@ -22,6 +42,7 @@ struct MLXModel: Identifiable, Hashable, Codable {
     var providerBadge: String {
         switch source {
         case .local: return "MLX"
+        case .network: return "Network"
         case .anthropic: return "Anthropic"
         case .openai: return "OpenAI"
         case .google: return "Google"
@@ -30,7 +51,7 @@ struct MLXModel: Identifiable, Hashable, Codable {
 }
 
 enum ModelSource: String, Codable, Hashable {
-    case local, anthropic, openai, google
+    case local, network, anthropic, openai, google
 }
 
 // MARK: - Runner
@@ -65,10 +86,10 @@ struct Runner: Identifiable, Hashable {
 
 let allRunners: [Runner] = [
     Runner(id: "claude", name: "Claude Code", icon: "brain.head.profile", needsProxy: true, binary: "claude"),
-    Runner(id: "codex", name: "Codex CLI", icon: "terminal", needsProxy: false, binary: "codex"),
+    Runner(id: "codex", name: "Codex CLI", icon: "terminal", needsProxy: true, binary: "codex"),
     Runner(id: "gemini", name: "Gemini CLI", icon: "sparkles", needsProxy: true, binary: "gemini"),
-    Runner(id: "aider", name: "Aider", icon: "wrench.adjustable", needsProxy: false, binary: "aider"),
-    Runner(id: "gptme", name: "gptme", icon: "message", needsProxy: false, binary: "gptme"),
+    Runner(id: "aider", name: "Aider", icon: "wrench.adjustable", needsProxy: true, binary: "aider"),
+    Runner(id: "gptme", name: "gptme", icon: "message", needsProxy: true, binary: "gptme"),
 ]
 
 struct RunnerLaunchSettings: Codable, Equatable {

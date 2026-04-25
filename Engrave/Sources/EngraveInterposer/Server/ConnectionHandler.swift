@@ -57,7 +57,7 @@ public actor ConnectionHandler {
         }
 
         // Parse into canonical IR
-        let canonical: CanonicalRequest
+        var canonical: CanonicalRequest
         switch sourceProvider {
         case "anthropic":
             canonical = MessageTranslator.parseAnthropicRequest(body)
@@ -67,6 +67,7 @@ public actor ConnectionHandler {
             canonical = MessageTranslator.parseOpenAIRequest(body)
         case "gemini":
             canonical = MessageTranslator.parseGeminiRequest(body, model: pathModel)
+            canonical.stream = path.contains(":streamGenerateContent")
         default:
             return .complete(HTTPResponse.error("Unsupported provider: \(sourceProvider)", status: 400))
         }
@@ -97,6 +98,31 @@ public actor ConnectionHandler {
         // Determine backend response format for parsing
         let backendFormat = normalizeBackendType(route.backend)
 
+        if !canonical.stream {
+            do {
+                let (data, backendResponse) = try await backendClient.send(
+                    url: prepared.url, headers: prepared.headers, body: prepared.body
+                )
+
+                if backendResponse.statusCode >= 400 {
+                    let errorBody = String(data: data, encoding: .utf8) ?? ""
+                    logger("[engrave] backend error: HTTP \(backendResponse.statusCode) \(errorBody.prefix(500))")
+                    return .complete(HTTPResponse.error("Backend error: HTTP \(backendResponse.statusCode)", status: backendResponse.statusCode))
+                }
+
+                return .complete(nonStreamingResponse(
+                    sourceProvider: sourceProvider,
+                    backendFormat: backendFormat,
+                    data: data,
+                    requestId: canonical.metadata.requestId,
+                    model: route.model
+                ))
+            } catch {
+                logger("[engrave] backend connection error: \(error.localizedDescription)")
+                return .complete(HTTPResponse.error("Backend connection failed: \(error.localizedDescription)", status: 502))
+            }
+        }
+
         // Forward to backend with streaming
         do {
             let (byteStream, backendResponse) = try await backendClient.stream(
@@ -124,6 +150,156 @@ public actor ConnectionHandler {
             logger("[engrave] backend connection error: \(error.localizedDescription)")
             return .complete(HTTPResponse.error("Backend connection failed: \(error.localizedDescription)", status: 502))
         }
+    }
+
+    private func nonStreamingResponse(
+        sourceProvider: String,
+        backendFormat: String,
+        data: Data,
+        requestId: String,
+        model: String
+    ) -> HTTPResponse {
+        guard let json = JSON.parse(data) else {
+            return HTTPResponse(
+                statusCode: 200,
+                statusText: "OK",
+                headers: ["content-type": "application/json", "access-control-allow-origin": "*"],
+                body: data
+            )
+        }
+
+        let text = extractText(from: json, backendFormat: backendFormat)
+        let response: [String: Any]
+        switch sourceProvider {
+        case "anthropic":
+            response = [
+                "id": requestId,
+                "type": "message",
+                "role": "assistant",
+                "model": model,
+                "content": [["type": "text", "text": text]],
+                "stop_reason": "end_turn",
+                "stop_sequence": NSNull(),
+                "usage": usage(from: json),
+            ]
+        case "openai":
+            response = [
+                "id": requestId,
+                "object": "response",
+                "created_at": Int(Date().timeIntervalSince1970),
+                "status": "completed",
+                "model": model,
+                "output": [[
+                    "type": "message",
+                    "id": "msg_\(requestId)",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [["type": "output_text", "text": text]],
+                ]],
+                "usage": usage(from: json),
+            ]
+        case "gemini":
+            response = [
+                "candidates": [[
+                    "content": [
+                        "role": "model",
+                        "parts": [["text": text]],
+                    ],
+                    "finishReason": "STOP",
+                    "index": 0,
+                ]],
+                "usageMetadata": geminiUsage(from: json),
+            ]
+        default:
+            response = [
+                "id": requestId,
+                "object": "chat.completion",
+                "created": Int(Date().timeIntervalSince1970),
+                "model": model,
+                "choices": [[
+                    "index": 0,
+                    "message": ["role": "assistant", "content": text],
+                    "finish_reason": "stop",
+                ]],
+                "usage": usage(from: json),
+            ]
+        }
+        return HTTPResponse.json(response)
+    }
+
+    private func extractText(from json: [String: Any], backendFormat: String) -> String {
+        if let choices = JSON.array(json["choices"]),
+           let first = JSON.dict(choices.first) {
+            if let message = JSON.dict(first["message"]),
+               let content = JSON.string(message["content"]) {
+                return content
+            }
+            if let delta = JSON.dict(first["delta"]),
+               let content = JSON.string(delta["content"]) {
+                return content
+            }
+            if let text = JSON.string(first["text"]) {
+                return text
+            }
+        }
+
+        if let output = JSON.array(json["output"]) {
+            let parts = output.compactMap { item -> String? in
+                guard let item = JSON.dict(item),
+                      let content = JSON.array(item["content"]) else { return nil }
+                return content.compactMap { part -> String? in
+                    guard let part = JSON.dict(part) else { return nil }
+                    return JSON.string(part["text"])
+                }.joined()
+            }
+            if !parts.isEmpty { return parts.joined() }
+        }
+
+        if let content = JSON.array(json["content"]) {
+            let parts = content.compactMap { part -> String? in
+                guard let part = JSON.dict(part) else { return nil }
+                return JSON.string(part["text"])
+            }
+            if !parts.isEmpty { return parts.joined() }
+        }
+
+        if let candidates = JSON.array(json["candidates"]),
+           let first = JSON.dict(candidates.first),
+           let content = JSON.dict(first["content"]),
+           let parts = JSON.array(content["parts"]) {
+            let texts = parts.compactMap { part -> String? in
+                guard let part = JSON.dict(part) else { return nil }
+                return JSON.string(part["text"])
+            }
+            if !texts.isEmpty { return texts.joined() }
+        }
+
+        if let text = JSON.string(json["text"]) { return text }
+        return ""
+    }
+
+    private func usage(from json: [String: Any]) -> [String: Any] {
+        if let usage = JSON.dict(json["usage"]) { return usage }
+        if let usage = JSON.dict(json["usageMetadata"]) {
+            return [
+                "input_tokens": JSON.int(usage["promptTokenCount"]) ?? 0,
+                "output_tokens": JSON.int(usage["candidatesTokenCount"]) ?? 0,
+                "total_tokens": JSON.int(usage["totalTokenCount"]) ?? 0,
+            ]
+        }
+        return ["input_tokens": 0, "output_tokens": 0, "total_tokens": 0]
+    }
+
+    private func geminiUsage(from json: [String: Any]) -> [String: Any] {
+        if let usage = JSON.dict(json["usageMetadata"]) { return usage }
+        if let usage = JSON.dict(json["usage"]) {
+            return [
+                "promptTokenCount": JSON.int(usage["prompt_tokens"]) ?? JSON.int(usage["input_tokens"]) ?? 0,
+                "candidatesTokenCount": JSON.int(usage["completion_tokens"]) ?? JSON.int(usage["output_tokens"]) ?? 0,
+                "totalTokenCount": JSON.int(usage["total_tokens"]) ?? 0,
+            ]
+        }
+        return ["promptTokenCount": 0, "candidatesTokenCount": 0, "totalTokenCount": 0]
     }
 
     private func handleModelList() -> ConnectionResult {

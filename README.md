@@ -57,10 +57,7 @@ swift build -c release
 ## Install
 
 ```bash
-# Build and create app bundle
-swift build -c release
-mkdir -p MLXLauncher.app/Contents/MacOS
-cp .build/arm64-apple-macosx/release/MLXLauncher MLXLauncher.app/Contents/MacOS/
+./scripts/build_app.sh release
 # Copy to Applications
 cp -R MLXLauncher.app /Applications/
 ```
@@ -98,6 +95,17 @@ Engrave/                               API translation proxy + governance engine
     GovernanceConfig.swift             Governance configuration + presets
   Sources/EngraveCLI/                  Standalone CLI
 ```
+
+## Governance Artifacts
+
+When governance is enabled, MLX Launcher writes generated policy artifacts to:
+
+- `~/.config/mlx-launcher/governance/engrave-governance-brief.md`
+- `~/.config/mlx-launcher/governance/gemini-policy.md`
+- `~/.config/mlx-launcher/governance/hooks/pre-commit`
+- `~/.config/mlx-launcher/governance/hooks/session-close-check`
+
+The packaged governance preset keeps configured runners on the Engrave interposer path and includes sub-agent launch control, context exhaustion relay, human-in-the-loop interception, UIA workflow DAG guidance, commit/worktree hygiene, TDD, and mock/stub disclosure rules.
 
 ## Architecture
 

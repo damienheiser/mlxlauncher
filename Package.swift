@@ -19,6 +19,10 @@ let package = Package(
                 .linkedFramework("WebKit"),
                 .linkedFramework("Network"),
             ]
+        ),
+        .executableTarget(
+            name: "MLXLauncherTestSuite",
+            path: "Tests/MLXLauncherTestSuite"
         )
     ]
 )

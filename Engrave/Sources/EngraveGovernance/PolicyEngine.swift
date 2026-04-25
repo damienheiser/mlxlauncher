@@ -27,7 +27,7 @@ public actor PolicyEngine {
             blockedCommands: config.blockedCommands,
             requireApprovalForTools: Set(config.requireApprovalForTools)
         )
-        compileRules()
+        compiledRules = Self.compileRules(for: config)
     }
 
     /// Update configuration (recompiles rules)
@@ -52,7 +52,11 @@ public actor PolicyEngine {
     }
 
     private func compileRules() {
-        compiledRules = config.rules.filter(\.enabled).map { rule in
+        compiledRules = Self.compileRules(for: config)
+    }
+
+    private nonisolated static func compileRules(for config: GovernanceConfig) -> [(rule: PolicyRule, regexes: [NSRegularExpression])] {
+        config.rules.filter(\.enabled).map { rule in
             let regexes = rule.matchPatterns.compactMap { pattern in
                 try? NSRegularExpression(pattern: pattern, options: .caseInsensitive)
             }
