@@ -25,6 +25,7 @@ class AppState: ObservableObject {
     @Published var governanceConfig = GovernanceConfig()
     @Published var governanceEvents: [GovernanceEvent] = []
     @Published var governanceEnabled = false
+    @Published var cloudAuthMode: CloudAuthMode = .apiKey
 
     private var logTimer: Timer?
     private var interposer: Engrave?
@@ -32,7 +33,7 @@ class AppState: ObservableObject {
     private var logStreamTask: Task<Void, Never>?
     private var policyEngine: PolicyEngine?
     private var governanceBridge: GovernanceBridge?
-    private var modelStoreObserverTask: Task<Void, Never>?
+    private var modelStoreObserverCancellable: AnyCancellable?
 
     let mlxBinDir: String
     let configDir: String
@@ -45,9 +46,9 @@ class AppState: ObservableObject {
         let home = NSHomeDirectory()
         mlxBinDir = "\(home)/mlx/bin"
         configDir = "\(home)/.config/mlx-launcher"
-        modelsDir = "\(home)/.lmstudio/models"
-        venvDir = "\(home)/.lmstudio/venv"
-        modelConfigFile = "\(home)/.lmstudio/model-configs.json"
+        modelsDir = "\(home)/.config/mlx-launcher/models"
+        venvDir = "\(home)/.config/mlx-launcher/venv"
+        modelConfigFile = "\(home)/.config/mlx-launcher/model-configs.json"
 
         // Load non-blocking data synchronously
         runnerSettings = Dictionary(uniqueKeysWithValues: allRunners.map {
@@ -67,6 +68,13 @@ class AppState: ObservableObject {
         _bootstrapped = true
 
         Task {
+            // Ensure dependencies are available (runs pip install if needed)
+            let pythonPath = findPython3()
+            let logs = await Task.detached(priority: .utility) {
+                Self.checkAndInstallMLX(python: pythonPath)
+            }.value
+            for log in logs { serverLog.append(log) }
+
             refreshModels()
             connectModelStore()
             checkServer()
@@ -100,25 +108,26 @@ class AppState: ObservableObject {
     // MARK: - Model Discovery
 
     func refreshModels() {
-        Task.detached { [mlxBinDir] in
-            let local = Self.discoverLocalModels(scriptPath: mlxBinDir + "/mlx-models")
-            let cloud = loadCloudModels()
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.localModels = local
-                self.mergeLaunchableModels(scriptModels: local, cloudModels: cloud)
-            }
+        let binDir = mlxBinDir
+        Task {
+            let local = await Task.detached(priority: .utility) {
+                Self.discoverLocalModels(scriptPath: binDir + "/mlx-models")
+            }.value
+            let cloud = await Task.detached(priority: .utility) {
+                loadCloudModels()
+            }.value
+            self.localModels = local
+            self.mergeLaunchableModels(scriptModels: local, cloudModels: cloud)
         }
     }
 
     private func connectModelStore() {
-        guard modelStoreObserverTask == nil else { return }
-        modelStoreObserverTask = Task { [weak self] in
-            guard let self else { return }
-            for await _ in self.modelStore.objectWillChange.values {
-                await MainActor.run { self.mergeLaunchableModels() }
+        guard modelStoreObserverCancellable == nil else { return }
+        modelStoreObserverCancellable = modelStore.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.mergeLaunchableModels()
             }
-        }
     }
 
     private func mergeLaunchableModels(scriptModels: [MLXModel]? = nil, cloudModels: [MLXModel]? = nil) {
@@ -242,7 +251,7 @@ class AppState: ObservableObject {
         serverLog = ["Starting MLX server for \(model.id)..."]
 
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "\(venvDir)/bin/python3")
+        proc.executableURL = URL(fileURLWithPath: findPython3())
         proc.arguments = serverStartArguments(model: model, profile: activeProfile)
         proc.environment = ProcessInfo.processInfo.environment
         let logURL = URL(fileURLWithPath: "/tmp/mlx-server.log")
@@ -292,7 +301,9 @@ class AppState: ObservableObject {
     func stopServer() {
         if let proc = mlxServerProcess, proc.isRunning {
             proc.terminate()
-            proc.waitUntilExit()
+            // Don't block main thread — let it die in background
+            let p = proc
+            Task.detached { p.waitUntilExit() }
         } else if let pid = serverStatus.pid {
             let killTask = Process()
             killTask.executableURL = URL(fileURLWithPath: "/bin/kill")
@@ -300,7 +311,8 @@ class AppState: ObservableObject {
             killTask.standardOutput = FileHandle.nullDevice
             killTask.standardError = FileHandle.nullDevice
             try? killTask.run()
-            killTask.waitUntilExit()
+            let k = killTask
+            Task.detached { k.waitUntilExit() }
         }
         mlxServerProcess = nil
 
@@ -311,7 +323,8 @@ class AppState: ObservableObject {
     func restartServer() {
         guard let model = selectedModel, model.source == .local else { return }
         stopServer()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+        Task {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
             self.startServer(model: model)
         }
     }
@@ -635,10 +648,7 @@ class AppState: ObservableObject {
 
     func loadProfiles() {
         let dir = "\(configDir)/profiles"
-        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
-            profiles = [.default]
-            return
-        }
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
         var loaded: [GenerationProfile] = []
         for file in files where file.hasSuffix(".json") {
             let path = "\(dir)/\(file)"
@@ -646,7 +656,11 @@ class AppState: ObservableObject {
                   let profile = try? JSONDecoder().decode(GenerationProfile.self, from: data) else { continue }
             loaded.append(profile)
         }
-        if loaded.isEmpty { loaded = [.default] }
+        if loaded.isEmpty {
+            // Seed built-in profiles on first run
+            loaded = GenerationProfile.builtins
+            for profile in loaded { saveProfileToDisk(profile) }
+        }
         profiles = loaded.sorted { $0.name < $1.name }
         if let def = profiles.first(where: { $0.name == "Default" }) {
             activeProfile = def
@@ -655,13 +669,17 @@ class AppState: ObservableObject {
         }
     }
 
-    func saveProfile(_ profile: GenerationProfile) {
+    private func saveProfileToDisk(_ profile: GenerationProfile) {
         let dir = "\(configDir)/profiles"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let path = "\(dir)/\(profile.name.lowercased().replacingOccurrences(of: " ", with: "_")).json"
         if let data = try? JSONEncoder().encode(profile) {
             try? data.write(to: URL(fileURLWithPath: path))
         }
+    }
+
+    func saveProfile(_ profile: GenerationProfile) {
+        saveProfileToDisk(profile)
         loadProfiles()
         activeProfile = profile
     }
@@ -720,13 +738,21 @@ class AppState: ObservableObject {
     // MARK: - System Prompts
 
     func loadPrompts() {
-        let path = "\(configDir)/prompts/library.json"
-        guard let data = FileManager.default.contents(atPath: path),
-              let loaded = try? JSONDecoder().decode([SystemPrompt].self, from: data) else {
-            prompts = []
-            return
+        let dir = "\(configDir)/prompts"
+        let path = "\(dir)/library.json"
+        if let data = FileManager.default.contents(atPath: path),
+           let loaded = try? JSONDecoder().decode([SystemPrompt].self, from: data), !loaded.isEmpty {
+            prompts = loaded
+        } else {
+            // Seed built-in prompts on first run
+            prompts = SystemPrompt.builtins
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(SystemPrompt.builtins) {
+                try? data.write(to: URL(fileURLWithPath: path))
+            }
         }
-        prompts = loaded
     }
 
     // MARK: - Launch
@@ -754,10 +780,10 @@ class AppState: ObservableObject {
         }
         let pathExport = "export PATH=\"\(mlxBinDir):/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.local/bin:\(NSHomeDirectory())/.cargo/bin:$PATH\""
         let waitForMLX = model.source == .local
-            ? "until curl -fsS \(shellQuote("http://localhost:\(serverStatus.port)/v1/models")) >/dev/null 2>&1; do sleep 1; done"
+            ? "echo 'Waiting for MLX server on port \(serverStatus.port)...' && _t=0 && until curl -fsS \(shellQuote("http://localhost:\(serverStatus.port)/v1/models")) >/dev/null 2>&1; do sleep 1; _t=$((_t+1)); if [ $_t -ge 120 ]; then echo 'ERROR: MLX server failed to start after 120s'; exit 1; fi; done"
             : ""
         let waitForInterposer = usesInterposer
-            ? "until curl -fsS \(shellQuote("http://localhost:\(interposerPort)/health")) >/dev/null 2>&1; do sleep 1; done"
+            ? "echo 'Waiting for interposer on port \(interposerPort)...' && _t=0 && until curl -fsS \(shellQuote("http://localhost:\(interposerPort)/health")) >/dev/null 2>&1; do sleep 1; _t=$((_t+1)); if [ $_t -ge 60 ]; then echo 'ERROR: Interposer failed to start after 60s'; exit 1; fi; done"
             : ""
         let pieces = [
             "cd \(shellQuote(settings.workingDirectory))",
@@ -765,20 +791,14 @@ class AppState: ObservableObject {
         ] + envExports + [waitForMLX, waitForInterposer, command.arguments.map(shellQuote).joined(separator: " ")]
         let shellCommand = pieces.filter { !$0.isEmpty }.joined(separator: " && ")
 
-        let terminalCommand = "/bin/bash -lc \(shellQuote(shellCommand))"
-        let escaped = terminalCommand.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-
-        let appleScript = """
-        tell application "Terminal"
-            activate
-            do script "\(escaped)"
-        end tell
-        """
+        let scriptPath = NSTemporaryDirectory() + "mlx-launcher-\(runner.id)-\(ProcessInfo.processInfo.globallyUniqueString).sh"
+        let scriptContent = "#!/bin/bash -l\n" + shellCommand + "\n"
+        try? scriptContent.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+        chmod(scriptPath, 0o755)
 
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", appleScript]
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = ["-a", "Terminal", scriptPath]
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
         try? task.run()
@@ -788,6 +808,7 @@ class AppState: ObservableObject {
         let modelName = model.source == .local ? model.id : model.id
         let modelId = model.source == .local ? (serverStatus.modelName ?? modelName) : modelName
         let usesInterposer = shouldUseInterposer(runner: runner, model: model)
+        let nativeCloudAuth = model.isCloud && cloudAuthMode == .cliSubscription
         let openAIBaseURL = usesInterposer ? "http://localhost:\(interposerPort)/v1" : "http://localhost:\(serverStatus.port)/v1"
 
         switch runner.id {
@@ -803,23 +824,34 @@ class AppState: ObservableObject {
                governanceConfig.isFeatureEnabled(.subAgentLaunchControl) || governanceConfig.isFeatureEnabled(.workflowTaskDAG) {
                 args += ["--append-system-prompt", governanceRunnerInstruction()]
             }
-            return ([
+            // CLI subscription: let Claude use its native OAuth auth (Max/Pro plan)
+            let claudeEnv: [String: String] = nativeCloudAuth ? [:] : [
                 "ANTHROPIC_BASE_URL": "http://localhost:\(interposerPort)",
                 "ANTHROPIC_API_KEY": "mlx-local",
-            ], ["claude"] + args)
+            ]
+            return (claudeEnv, ["claude"] + args)
         case "codex":
-            return ([
+            let codexEnv: [String: String] = nativeCloudAuth ? [:] : [
                 "OPENAI_BASE_URL": "http://localhost:\(interposerPort)/v1",
                 "OPENAI_API_KEY": "mlx-local",
-            ], ["codex"] + defaultCodexArgs(userArgs, model: modelId) + userArgs)
+            ]
+            let codexArgs = nativeCloudAuth
+                ? defaultModelArgs(userArgs, flag: "-m", model: modelId) + userArgs
+                : defaultCodexArgs(userArgs, model: modelId) + userArgs
+            return (codexEnv, ["codex"] + codexArgs)
         case "gemini":
             let geminiArgs = defaultGeminiArgs(userArgs, model: modelName) + userArgs
-            return ([
+            let geminiEnv: [String: String] = nativeCloudAuth ? [:] : [
                 "GOOGLE_GEMINI_BASE_URL": "http://localhost:\(interposerPort)",
                 "GEMINI_API_KEY": "mlx-local",
                 "GOOGLE_API_KEY": "mlx-local",
-            ], ["gemini"] + geminiArgs)
+            ]
+            return (geminiEnv, ["gemini"] + geminiArgs)
         case "aider":
+            if nativeCloudAuth {
+                // Aider with native API key from env — no base URL override
+                return ([:], ["aider", "--model", "openai/\(modelId)"] + userArgs)
+            }
             return ([:], [
                 "aider",
                 "--openai-api-base", openAIBaseURL,
@@ -827,17 +859,23 @@ class AppState: ObservableObject {
                 "--model", "openai/\(modelId)",
             ] + userArgs)
         case "gptme":
-            return ([
+            let gptmeEnv: [String: String] = nativeCloudAuth ? [:] : [
                 "OPENAI_BASE_URL": openAIBaseURL,
                 "OPENAI_API_KEY": "mlx-local",
-            ], ["gptme"] + defaultModelArgs(userArgs, flag: "--model", model: modelName) + userArgs)
+            ]
+            return (gptmeEnv, ["gptme"] + defaultModelArgs(userArgs, flag: "--model", model: modelName) + userArgs)
         default:
             return ([:], [runner.binary] + userArgs)
         }
     }
 
     private func shouldUseInterposer(runner: Runner, model: MLXModel) -> Bool {
-        runner.needsProxy || model.source != .local
+        // CLI subscription mode: skip interposer for cloud models, let the runner
+        // use its native OAuth/session auth (Claude Max, Codex sub, Gemini CLI, etc.)
+        if model.isCloud && cloudAuthMode == .cliSubscription {
+            return false
+        }
+        return runner.needsProxy || model.source != .local
     }
 
     // MARK: - Persistence
@@ -1032,6 +1070,196 @@ class AppState: ObservableObject {
 
     private func shellQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private func findPython3() -> String {
+        // Require modern Python (3.12+) for mlx compatibility.
+        // System python on macOS is 3.9 which cannot run modern mlx/mlx-lm.
+        // Prefer homebrew python which ships 3.14+.
+        let candidates = [
+            "\(venvDir)/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "\(NSHomeDirectory())/.local/bin/python3",
+        ]
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            // Verify it's 3.12+
+            if Self.pythonVersionOK(path) {
+                return path
+            }
+        }
+        // Never fall back to /usr/bin/python3 — it's 3.9 on macOS and can't run mlx
+        return "/opt/homebrew/bin/python3"
+    }
+
+    /// Returns true if the python at `path` is version 3.12 or newer.
+    nonisolated private static func pythonVersionOK(_ path: String) -> Bool {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: path)
+        proc.arguments = ["-c", "import sys; exit(0 if sys.version_info >= (3, 12) else 1)"]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            return proc.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    /// Ensure Python 3.12+ and mlx-lm are available. Installs via Homebrew if needed.
+    /// Runs entirely off the main thread.
+    nonisolated static func checkAndInstallMLX(python: String) -> [String] {
+        var logs: [String] = []
+
+        // Step 1: Ensure we have a modern Python
+        let pythonPath: String
+        if FileManager.default.isExecutableFile(atPath: python) && pythonVersionOK(python) {
+            pythonPath = python
+            logs.append("Python OK: \(python)")
+        } else {
+            logs.append("Modern Python (3.12+) not found at \(python). Installing via Homebrew...")
+            pythonPath = installPythonViaHomebrew(&logs)
+            guard !pythonPath.isEmpty else { return logs }
+        }
+
+        // Step 2: Get version info
+        let verProc = Process()
+        verProc.executableURL = URL(fileURLWithPath: pythonPath)
+        verProc.arguments = ["--version"]
+        let verPipe = Pipe()
+        verProc.standardOutput = verPipe
+        verProc.standardError = verPipe
+        if let _ = try? verProc.run() {
+            verProc.waitUntilExit()
+            let ver = String(data: verPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+            logs.append("Using: \(ver) at \(pythonPath)")
+        }
+
+        // Step 3: Check if mlx and mlx-lm are importable
+        let check = Process()
+        check.executableURL = URL(fileURLWithPath: pythonPath)
+        check.arguments = ["-c", "import mlx_lm; print('mlx-lm', mlx_lm.__version__)"]
+        let checkPipe = Pipe()
+        check.standardOutput = checkPipe
+        check.standardError = FileHandle.nullDevice
+        do {
+            try check.run()
+            check.waitUntilExit()
+            if check.terminationStatus == 0 {
+                let ver = String(data: checkPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                logs.append("mlx-lm available: \(ver)")
+
+                // Step 3b: Upgrade mlx/mlx-lm in the background so latest model architectures are supported
+                let upgrade = Process()
+                upgrade.executableURL = URL(fileURLWithPath: pythonPath)
+                upgrade.arguments = ["-m", "pip", "install", "--break-system-packages", "--upgrade", "mlx-lm"]
+                upgrade.standardOutput = FileHandle.nullDevice
+                upgrade.standardError = FileHandle.nullDevice
+                if let _ = try? upgrade.run() {
+                    upgrade.waitUntilExit()
+                    if upgrade.terminationStatus == 0 {
+                        // Re-check version after upgrade
+                        let recheck = Process()
+                        recheck.executableURL = URL(fileURLWithPath: pythonPath)
+                        recheck.arguments = ["-c", "import mlx_lm; print('mlx-lm', mlx_lm.__version__)"]
+                        let recheckPipe = Pipe()
+                        recheck.standardOutput = recheckPipe
+                        recheck.standardError = FileHandle.nullDevice
+                        if let _ = try? recheck.run() {
+                            recheck.waitUntilExit()
+                            let newVer = String(data: recheckPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                            if newVer != ver {
+                                logs.append("mlx-lm upgraded: \(newVer)")
+                            }
+                        }
+                    }
+                }
+                return logs
+            }
+        } catch {}
+
+        // Step 4: Install mlx-lm (which pulls in mlx as dependency)
+        logs.append("mlx-lm not found. Installing mlx-lm via pip...")
+        let install = Process()
+        install.executableURL = URL(fileURLWithPath: pythonPath)
+        install.arguments = ["-m", "pip", "install", "--break-system-packages", "--upgrade", "mlx-lm"]
+        let installPipe = Pipe()
+        install.standardOutput = installPipe
+        install.standardError = installPipe
+        do {
+            try install.run()
+            install.waitUntilExit()
+            if install.terminationStatus == 0 {
+                logs.append("mlx-lm installed successfully.")
+            } else {
+                let output = String(data: installPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                logs.append("pip install failed: \(String(output.prefix(500)))")
+                logs.append("Trying Homebrew formula instead...")
+                // Fallback: try homebrew's mlx package
+                let brewInstall = Process()
+                brewInstall.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/brew")
+                brewInstall.arguments = ["install", "mlx"]
+                brewInstall.standardOutput = FileHandle.nullDevice
+                brewInstall.standardError = FileHandle.nullDevice
+                if let _ = try? brewInstall.run() {
+                    brewInstall.waitUntilExit()
+                    logs.append(brewInstall.terminationStatus == 0 ? "mlx installed via Homebrew." : "Homebrew mlx install failed.")
+                }
+            }
+        } catch {
+            logs.append("Failed to run pip: \(error)")
+        }
+        return logs
+    }
+
+    /// Install Python via Homebrew. Returns path to installed python3 or empty string on failure.
+    nonisolated private static func installPythonViaHomebrew(_ logs: inout [String]) -> String {
+        let brewPath = "/opt/homebrew/bin/brew"
+        guard FileManager.default.isExecutableFile(atPath: brewPath) else {
+            logs.append("ERROR: Homebrew not found at \(brewPath). Install Homebrew first: https://brew.sh")
+            return ""
+        }
+
+        // Check if python is already installed via brew but just not linked
+        let pythonPath = "/opt/homebrew/bin/python3"
+        if FileManager.default.isExecutableFile(atPath: pythonPath) && pythonVersionOK(pythonPath) {
+            logs.append("Homebrew Python already available at \(pythonPath)")
+            return pythonPath
+        }
+
+        logs.append("Installing Python via Homebrew...")
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: brewPath)
+        proc.arguments = ["install", "python@3"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            if proc.terminationStatus == 0 {
+                logs.append("Python installed via Homebrew.")
+                if FileManager.default.isExecutableFile(atPath: pythonPath) {
+                    return pythonPath
+                }
+                // Try versioned path
+                let versioned = "/opt/homebrew/bin/python3.14"
+                if FileManager.default.isExecutableFile(atPath: versioned) {
+                    return versioned
+                }
+                logs.append("WARNING: brew install succeeded but python3 not found at expected path")
+                return ""
+            } else {
+                let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                logs.append("Homebrew python install failed: \(String(output.prefix(500)))")
+                return ""
+            }
+        } catch {
+            logs.append("Failed to run brew: \(error)")
+            return ""
+        }
     }
 
     private func splitShellWords(_ input: String) -> [String] {

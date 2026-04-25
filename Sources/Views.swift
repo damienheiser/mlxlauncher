@@ -2,6 +2,58 @@ import SwiftUI
 import WebKit
 import EngraveGovernance
 
+// MARK: - Synthaer Theme
+
+/// Synthaer.ai color scheme: dark indigo background, cream text
+enum Theme {
+    // Core
+    static let bg           = Color(red: 22/255, green: 18/255, blue: 40/255)     // #161228
+    static let bgCard       = Color(red: 30/255, green: 25/255, blue: 55/255)     // slightly lighter card bg
+    static let bgHover      = Color(red: 40/255, green: 35/255, blue: 70/255)     // hover/selection bg
+    static let cream        = Color(red: 243/255, green: 235/255, blue: 221/255)  // #F3EBDD
+    static let creamBold    = Color(red: 255/255, green: 243/255, blue: 224/255)  // #FFF3E0
+    static let creamDim     = Color(red: 217/255, green: 208/255, blue: 198/255)  // #D9D0C6
+
+    // Accents
+    static let accent       = Color(red: 255/255, green: 79/255, blue: 216/255)   // #FF4FD8 hot pink
+    static let accentLime   = Color(red: 166/255, green: 213/255, blue: 106/255)  // #A6D56A
+    static let accentBlue   = Color(red: 134/255, green: 167/255, blue: 255/255)  // #86A7FF
+    static let accentMagenta = Color(red: 201/255, green: 137/255, blue: 255/255) // #C989FF
+
+    // ANSI-derived
+    static let muted        = Color(red: 106/255, green: 100/255, blue: 139/255)  // #6A648B bright black
+    static let mutedPurple  = Color(red: 75/255, green: 69/255, blue: 103/255)    // #4B4567
+    static let teal         = Color(red: 112/255, green: 215/255, blue: 208/255)  // #70D7D0
+    static let green        = Color(red: 126/255, green: 142/255, blue: 107/255)  // #7E8E6B
+    static let red          = Color(red: 224/255, green: 138/255, blue: 168/255)  // #E08AA8
+    static let yellow       = Color(red: 232/255, green: 199/255, blue: 111/255)  // #E8C76F
+    static let blue         = Color(red: 112/255, green: 124/255, blue: 176/255)  // #707CB0
+}
+
+/// Accessibility-aware font helper. Minimum 12pt, respects system Dynamic Type scaling.
+extension Font {
+    /// Title text — 16pt base, semibold
+    static let thTitle = Font.system(size: max(16, NSFont.systemFontSize), weight: .semibold)
+    /// Section header — 14pt base, semibold
+    static let thHeader = Font.system(size: max(14, NSFont.systemFontSize), weight: .semibold)
+    /// Body text — 13pt base
+    static let thBody = Font.system(size: max(13, NSFont.systemFontSize))
+    /// Body text, medium weight
+    static let thBodyMedium = Font.system(size: max(13, NSFont.systemFontSize), weight: .medium)
+    /// Label text — 12pt base, medium
+    static let thLabel = Font.system(size: max(12, NSFont.smallSystemFontSize), weight: .medium)
+    /// Small label — 12pt base
+    static let thSmall = Font.system(size: max(12, NSFont.smallSystemFontSize))
+    /// Monospaced body
+    static let thMono = Font.system(size: max(12, NSFont.smallSystemFontSize), design: .monospaced)
+    /// Monospaced small — 12pt base
+    static let thMonoSmall = Font.system(size: max(12, NSFont.smallSystemFontSize), design: .monospaced)
+    /// Badge text — 10pt, bold (only for tiny status badges)
+    static let thBadge = Font.system(size: max(10, NSFont.smallSystemFontSize - 1), weight: .bold)
+    /// Icon size
+    static let thIcon = Font.system(size: max(13, NSFont.systemFontSize))
+}
+
 // MARK: - Main 3-Column Layout
 
 struct ContentView: View {
@@ -44,6 +96,8 @@ struct ContentView: View {
             rightPanelView.frame(minWidth: 380, idealWidth: 440)
         }
         .frame(minWidth: 1000, minHeight: 620)
+        .background(Theme.bg)
+        .foregroundStyle(Theme.cream)
         .onAppear {
             state.bootstrap()
             if !webServerStarted {
@@ -63,7 +117,8 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 Text("🐱").font(.system(size: 22))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("MLX Launcher").font(.system(size: 13, weight: .semibold))
+                    Text("MLX Launcher").font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.creamBold)
                     serverBadge
                 }
                 Spacer()
@@ -77,15 +132,16 @@ struct ContentView: View {
                 ForEach(RightPanel.allCases) { panel in
                     Button { rightPanel = panel } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: panel.icon).font(.system(size: 11)).frame(width: 16)
-                                .foregroundStyle(rightPanel == panel ? .white : .secondary)
-                            Text(panel.rawValue).font(.system(size: 12))
-                                .foregroundStyle(rightPanel == panel ? .white : .primary)
+                            Image(systemName: panel.icon).font(.system(size: 13)).frame(width: 18)
+                                .foregroundStyle(rightPanel == panel ? Theme.creamBold : Theme.creamDim)
+                            Text(panel.rawValue).font(.system(size: 13))
+                                .foregroundStyle(rightPanel == panel ? Theme.creamBold : Theme.cream)
                             Spacer()
                         }
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(rightPanel == panel ? Color.accentColor.opacity(0.8) : .clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .padding(.horizontal, 10).padding(.vertical, 7)
+                        .background(rightPanel == panel ? Theme.accentMagenta.opacity(0.35) : .clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -96,7 +152,7 @@ struct ContentView: View {
 
             // Runner selector
             VStack(alignment: .leading, spacing: 6) {
-                Text("Runner").font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary)
+                Text("Runner").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.creamDim)
                     .padding(.horizontal, 4)
                 ForEach(allRunners) { runner in
                     RunnerRow(runner: runner, isSelected: state.selectedRunner == runner)
@@ -104,6 +160,28 @@ struct ContentView: View {
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
+
+            // Cloud auth mode
+            if state.selectedModel?.isCloud == true {
+                Divider().padding(.horizontal, 12)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Cloud Auth").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.creamDim)
+                        .padding(.horizontal, 4)
+                    Picker("", selection: $state.cloudAuthMode) {
+                        ForEach(CloudAuthMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    Text(state.cloudAuthMode == .cliSubscription
+                        ? "Uses runner's native login (Max/Pro)"
+                        : "Routes through Engrave with API key")
+                        .font(.system(size: 11)).foregroundStyle(Theme.creamDim)
+                        .padding(.horizontal, 4)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+            }
 
             Spacer()
 
@@ -113,23 +191,23 @@ struct ContentView: View {
             VStack(spacing: 8) {
                 if let m = state.selectedModel {
                     Text(m.shortName)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Theme.creamDim).lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Button { state.launch() } label: {
                     HStack {
-                        Image(systemName: "play.fill").font(.system(size: 10))
+                        Image(systemName: "play.fill").font(.system(size: 12))
                         Text("Launch").font(.system(size: 12, weight: .semibold))
                     }.frame(maxWidth: .infinity).padding(.vertical, 4)
                 }
-                .buttonStyle(.borderedProminent).tint(.teal)
+                .buttonStyle(.borderedProminent).tint(Theme.accent)
                 .disabled(state.selectedModel == nil || !state.selectedRunner.isInstalled)
                 .keyboardShortcut(.return, modifiers: .command)
             }
             .padding(12)
         }
-        .background(.ultraThinMaterial)
+        .background(Theme.bg)
     }
 
     private var serverBadge: some View {
@@ -139,7 +217,7 @@ struct ContentView: View {
                 .frame(width: 5, height: 5)
             Text(state.serverStatus.state == .running ? "Running" :
                  state.serverStatus.state == .starting ? "Starting" : "Idle")
-                .font(.system(size: 9)).foregroundStyle(.tertiary)
+                .font(.system(size: 12)).foregroundStyle(Theme.creamDim)
         }
     }
 
@@ -171,18 +249,18 @@ struct RunnerRow: View {
     let runner: Runner; let isSelected: Bool
     var body: some View {
         HStack(spacing: 7) {
-            Image(systemName: runner.icon).font(.system(size: 11)).frame(width: 14)
-            Text(runner.name).font(.system(size: 11))
+            Image(systemName: runner.icon).font(.system(size: 13)).frame(width: 14)
+            Text(runner.name).font(.system(size: 13))
             Spacer()
             if runner.isInstalled && isSelected {
-                Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.teal)
+                Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.teal)
             }
             if !runner.isInstalled {
-                Text("n/a").font(.system(size: 8)).foregroundStyle(.quaternary)
+                Text("n/a").font(.system(size: 12)).foregroundStyle(Theme.creamDim)
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(isSelected ? Color.teal.opacity(0.07) : .clear)
+        .background(isSelected ? Theme.teal.opacity(0.15) : .clear)
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .opacity(runner.isInstalled ? 1.0 : 0.3)
     }
@@ -214,8 +292,8 @@ struct ModelListView: View {
         VStack(spacing: 0) {
             // Toolbar
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(.tertiary)
-                TextField("Filter...", text: $search).textFieldStyle(.plain).font(.system(size: 11))
+                Image(systemName: "magnifyingglass").font(.system(size: 13)).foregroundStyle(Theme.creamDim)
+                TextField("Filter...", text: $search).textFieldStyle(.plain).font(.system(size: 13))
                 Picker("", selection: $sourceFilter) {
                     ForEach(ModelSourceFilter.allCases, id: \.self) { Text($0.rawValue) }
                 }.pickerStyle(.segmented).frame(width: 140)
@@ -236,7 +314,7 @@ struct ModelListView: View {
 
             Divider()
             HStack {
-                Text("\(filtered.count) models").font(.system(size: 9)).foregroundStyle(.quaternary)
+                Text("\(filtered.count) models").font(.system(size: 12)).foregroundStyle(Theme.creamDim)
                 Spacer()
             }.padding(.horizontal, 10).padding(.vertical, 4)
         }
@@ -250,25 +328,25 @@ struct ModelRow: View {
             Circle().fill(srcColor).frame(width: 5, height: 5)
             VStack(alignment: .leading, spacing: 0) {
                 Text(model.shortName)
-                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular, design: .monospaced))
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular, design: .monospaced))
                     .lineLimit(1)
                 if model.source == .local, let org = model.id.components(separatedBy: "/").first {
-                    Text(org).font(.system(size: 9)).foregroundStyle(.quaternary)
+                    Text(org).font(.system(size: 12)).foregroundStyle(Theme.creamDim)
                 }
             }
             Spacer()
             Text(model.providerBadge)
-                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .foregroundStyle(srcColor)
                 .padding(.horizontal, 4).padding(.vertical, 1)
                 .background(srcColor.opacity(0.1))
                 .clipShape(RoundedRectangle(cornerRadius: 2))
             Text(model.size)
-                .font(.system(size: 9, design: .monospaced)).foregroundStyle(.quaternary)
-                .frame(width: 50, alignment: .trailing)
+                .font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.creamDim)
+                .frame(width: 55, alignment: .trailing)
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
-        .background(isSelected ? Color.accentColor.opacity(0.1) : .clear)
+        .background(isSelected ? Theme.accentMagenta.opacity(0.2) : .clear)
     }
     var srcColor: Color {
         switch model.source {
@@ -289,7 +367,7 @@ struct ParametersPanel: View {
         VStack(spacing: 0) {
             // Profile picker row
             HStack(spacing: 8) {
-                Text("Profile").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                Text("Profile").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.creamDim)
                 Picker("", selection: $state.activeProfile.name) {
                     ForEach(state.profiles) { p in Text(p.name).tag(p.name) }
                 }
@@ -300,12 +378,12 @@ struct ParametersPanel: View {
                     }
                 }
                 Button("Default") { state.resetToDefault() }
-                    .font(.system(size: 10)).buttonStyle(.bordered).controlSize(.mini)
+                    .font(.system(size: 12)).buttonStyle(.bordered).controlSize(.mini)
                 Spacer()
                 Button("Save") { state.saveProfile(state.activeProfile) }
-                    .font(.system(size: 10)).buttonStyle(.borderedProminent).tint(.teal).controlSize(.mini)
+                    .font(.system(size: 12)).buttonStyle(.borderedProminent).tint(.teal).controlSize(.mini)
                 Button("Save As...") { showSave = true }
-                    .font(.system(size: 10)).buttonStyle(.bordered).controlSize(.mini)
+                    .font(.system(size: 12)).buttonStyle(.bordered).controlSize(.mini)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
 
@@ -324,11 +402,11 @@ struct ParametersPanel: View {
                     Divider()
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("System Prompt").font(.system(size: 11, weight: .medium))
+                        Text("System Prompt").font(.system(size: 13, weight: .medium))
                         TextEditor(text: $state.activeProfile.system_prompt)
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.system(size: 13, design: .monospaced))
                             .scrollContentBackground(.hidden)
-                            .padding(6).background(.quaternary.opacity(0.3))
+                            .padding(6).background(Theme.bgCard)
                             .clipShape(RoundedRectangle(cornerRadius: 4))
                             .frame(minHeight: 60, maxHeight: 120)
                     }
@@ -358,9 +436,9 @@ struct PS: View {
     var body: some View {
         VStack(spacing: 2) {
             HStack {
-                Text(label).font(.system(size: 11, weight: .medium))
+                Text(label).font(.system(size: 13, weight: .medium))
                 Spacer()
-                Text(String(format: fmt, value)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.teal)
+                Text(String(format: fmt, value)).font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.teal)
             }
             Slider(value: $value, in: range, step: step).controlSize(.small)
         }
@@ -372,9 +450,9 @@ struct PI: View {
     var body: some View {
         VStack(spacing: 2) {
             HStack {
-                Text(label).font(.system(size: 11, weight: .medium))
+                Text(label).font(.system(size: 13, weight: .medium))
                 Spacer()
-                Text("\(value)").font(.system(size: 11, design: .monospaced)).foregroundStyle(.teal)
+                Text("\(value)").font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.teal)
             }
             Slider(value: Binding(get: { Double(value) }, set: { value = Int($0) }),
                    in: Double(range.lowerBound)...Double(range.upperBound), step: 1).controlSize(.small)
@@ -401,10 +479,10 @@ struct PromptsPanel: View {
         VStack(spacing: 0) {
             // Search + add
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(.tertiary)
-                TextField("Search...", text: $search).textFieldStyle(.plain).font(.system(size: 11))
+                Image(systemName: "magnifyingglass").font(.system(size: 13)).foregroundStyle(Theme.creamDim)
+                TextField("Search...", text: $search).textFieldStyle(.plain).font(.system(size: 13))
                 Button { showAdd = true } label: {
-                    Image(systemName: "plus").font(.system(size: 10))
+                    Image(systemName: "plus").font(.system(size: 12))
                 }.buttonStyle(.borderless)
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
@@ -414,8 +492,8 @@ struct PromptsPanel: View {
             // Top: prompt list
             List(filtered, selection: $selected) { p in
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(p.name).font(.system(size: 11, weight: .medium))
-                    Text(String(p.prompt.prefix(50))).font(.system(size: 9)).foregroundStyle(.quaternary).lineLimit(1)
+                    Text(p.name).font(.system(size: 13, weight: .medium))
+                    Text(String(p.prompt.prefix(50))).font(.system(size: 12)).foregroundStyle(Theme.creamDim).lineLimit(1)
                 }.padding(.vertical, 1).tag(p)
             }
             .listStyle(.plain)
@@ -429,10 +507,10 @@ struct PromptsPanel: View {
                     HStack {
                         Text(p.name).font(.system(size: 12, weight: .semibold))
                         Spacer()
-                        Text(p.source).font(.system(size: 9)).foregroundStyle(.quaternary)
+                        Text(p.source).font(.system(size: 12)).foregroundStyle(Theme.creamDim)
                     }
                     ScrollView {
-                        Text(p.prompt).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                        Text(p.prompt).font(.system(size: 13, design: .monospaced)).textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading).lineSpacing(2)
                     }
                     HStack(spacing: 6) {
@@ -447,7 +525,7 @@ struct PromptsPanel: View {
             } else {
                 VStack {
                     Spacer()
-                    Text("Select a prompt").font(.system(size: 11)).foregroundStyle(.quaternary)
+                    Text("Select a prompt").font(.system(size: 13)).foregroundStyle(Theme.creamDim)
                     Spacer()
                 }
             }
@@ -457,7 +535,7 @@ struct PromptsPanel: View {
                 Text("New Prompt").font(.system(size: 13, weight: .semibold))
                 TextField("Name", text: $newPromptName).textFieldStyle(.roundedBorder)
                 TextEditor(text: $newPromptText)
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(size: 13, design: .monospaced))
                     .frame(width: 360, height: 150).border(.quaternary)
                 HStack {
                     Button("Cancel") { showAdd = false }.keyboardShortcut(.cancelAction)
@@ -499,7 +577,7 @@ struct RunnerArgsPanel: View {
                 Image(systemName: runner.icon).font(.system(size: 13))
                 Text(runner.name).font(.system(size: 13, weight: .semibold))
                 if !runner.isInstalled {
-                    Text("not installed").font(.system(size: 9)).foregroundStyle(.red)
+                    Text("not installed").font(.system(size: 12)).foregroundStyle(.red)
                 }
                 Spacer()
                 Button("Clear All") {
@@ -509,7 +587,7 @@ struct RunnerArgsPanel: View {
                     next.extraArguments = ""
                     state.updateSettings(for: runner, next)
                 }
-                    .font(.system(size: 10)).buttonStyle(.bordered).controlSize(.mini)
+                    .font(.system(size: 12)).buttonStyle(.bordered).controlSize(.mini)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
 
@@ -519,8 +597,8 @@ struct RunnerArgsPanel: View {
                 VStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Runner Working Directory")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.tertiary)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.creamDim)
                         HStack(spacing: 6) {
                             TextField("Directory", text: Binding(
                                 get: { state.settings(for: runner).workingDirectory },
@@ -531,21 +609,21 @@ struct RunnerArgsPanel: View {
                                 }
                             ))
                             .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 10, design: .monospaced))
+                            .font(.system(size: 12, design: .monospaced))
                             Button("Home") {
                                 var next = state.settings(for: runner)
                                 next.workingDirectory = NSHomeDirectory()
                                 state.updateSettings(for: runner, next)
                             }
-                            .font(.system(size: 10)).buttonStyle(.bordered).controlSize(.mini)
+                            .font(.system(size: 12)).buttonStyle(.bordered).controlSize(.mini)
                         }
                     }
                     .padding(.horizontal, 14).padding(.top, 10)
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Extra Arguments")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.tertiary)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.creamDim)
                         TextField("--flag value --another", text: Binding(
                             get: { state.settings(for: runner).extraArguments },
                             set: {
@@ -555,7 +633,7 @@ struct RunnerArgsPanel: View {
                             }
                         ))
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.system(size: 12, design: .monospaced))
                     }
                     .padding(.horizontal, 14)
 
@@ -579,10 +657,10 @@ struct RunnerArgsPanel: View {
 
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(arg.flag)
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .font(.system(size: 13, weight: .medium, design: .monospaced))
                                     .foregroundStyle(state.settings(for: runner).enabledFlags.contains(arg.flag) ? .teal : .primary)
                                 Text(arg.help)
-                                    .font(.system(size: 9)).foregroundStyle(.tertiary).lineLimit(2)
+                                    .font(.system(size: 12)).foregroundStyle(Theme.creamDim).lineLimit(2)
                             }
 
                             Spacer()
@@ -597,7 +675,7 @@ struct RunnerArgsPanel: View {
                                     }
                                 ))
                                 .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 10, design: .monospaced))
+                                .font(.system(size: 12, design: .monospaced))
                                 .frame(width: 100)
                             }
                         }
@@ -611,8 +689,8 @@ struct RunnerArgsPanel: View {
 
             // Preview command
             HStack {
-                Text("Command: ").font(.system(size: 9, weight: .medium)).foregroundStyle(.tertiary)
-                Text(state.commandPreview()).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                Text("Command: ").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
+                Text(state.commandPreview()).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.creamDim)
                     .lineLimit(1).truncationMode(.tail)
                 Spacer()
             }
@@ -726,7 +804,7 @@ struct ServerPanel: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("MLX Server").font(.system(size: 14, weight: .semibold))
                     Text("localhost:\(state.serverStatus.port)")
-                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.creamDim)
                 }
                 Spacer()
                 HStack(spacing: 4) {
@@ -753,24 +831,24 @@ struct ServerPanel: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Extra MLX Server Args")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.creamDim)
                 TextField("--chat-template-args '{\"enable_thinking\":false}'", text: $state.extraMLXServerArguments)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.system(size: 12, design: .monospaced))
                 Text("Typed sampling parameters are applied on start; use this for any additional mlx_lm server flag.")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.quaternary)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.creamDim)
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
 
             Divider()
 
             HStack {
-                Text("Log").font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary)
+                Text("Log").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
                 Spacer()
                 Button("Clear") { state.serverLog.removeAll() }
-                    .font(.system(size: 9)).buttonStyle(.borderless)
+                    .font(.system(size: 12)).buttonStyle(.borderless)
             }.padding(.horizontal, 12).padding(.vertical, 6)
 
             LogViewer(lines: state.serverLog)
@@ -782,10 +860,10 @@ struct SC: View {
     let t: String; let v: String; let c: Color
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(t).font(.system(size: 8, weight: .semibold)).foregroundStyle(.quaternary).textCase(.uppercase)
-            Text(v).font(.system(size: 10, design: .monospaced)).foregroundStyle(c).lineLimit(1)
+            Text(t).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.creamDim).textCase(.uppercase)
+            Text(v).font(.system(size: 12, design: .monospaced)).foregroundStyle(c).lineLimit(1)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
-        .background(.quaternary.opacity(0.2)).clipShape(RoundedRectangle(cornerRadius: 4))
+        .background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }
 
@@ -813,11 +891,11 @@ struct ModelStorePanel: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Model Store").font(.system(size: 14, weight: .semibold))
                     Text("Fetch, manage, and discover models")
-                        .font(.system(size: 9)).foregroundStyle(.quaternary)
+                        .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
                 }
                 Spacer()
                 Button { state.modelStore.scanLocalModels() } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 11))
+                    Image(systemName: "arrow.clockwise").font(.system(size: 13))
                 }.buttonStyle(.bordered).controlSize(.mini)
             }.padding(12)
 
@@ -825,12 +903,12 @@ struct ModelStorePanel: View {
             HStack(spacing: 0) {
                 ForEach(ModelTab.allCases, id: \.self) { tab in
                     Button { activeTab = tab } label: {
-                        Text(tab.rawValue).font(.system(size: 11, weight: activeTab == tab ? .semibold : .regular))
+                        Text(tab.rawValue).font(.system(size: 13, weight: activeTab == tab ? .semibold : .regular))
                             .frame(maxWidth: .infinity).padding(.vertical, 6)
                             .background(activeTab == tab ? Color.accentColor.opacity(0.15) : .clear)
                     }.buttonStyle(.plain)
                 }
-            }.background(.quaternary.opacity(0.2)).clipShape(RoundedRectangle(cornerRadius: 6)).padding(.horizontal, 12)
+            }.background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 6)).padding(.horizontal, 12)
 
             Divider().padding(.top, 8)
 
@@ -849,16 +927,16 @@ struct ModelStorePanel: View {
         VStack(spacing: 0) {
             // Scan directories
             HStack {
-                Text("Scan Directories").font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary)
+                Text("Scan Directories").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
                 Spacer()
                 Button { showAddDir.toggle() } label: {
-                    Image(systemName: "plus").font(.system(size: 9))
+                    Image(systemName: "plus").font(.system(size: 12))
                 }.buttonStyle(.borderless)
             }.padding(.horizontal, 12).padding(.vertical, 6)
 
             if showAddDir {
                 HStack(spacing: 4) {
-                    TextField("Path...", text: $newDirPath).textFieldStyle(.roundedBorder).font(.system(size: 10))
+                    TextField("Path...", text: $newDirPath).textFieldStyle(.roundedBorder).font(.system(size: 12))
 	                    Button("Add") {
 	                        if !newDirPath.isEmpty {
 	                            state.modelStore.addScanDirectory(newDirPath)
@@ -874,16 +952,16 @@ struct ModelStorePanel: View {
                 HStack(spacing: 4) {
                     ForEach(state.modelStore.scanDirectories, id: \.self) { dir in
                         HStack(spacing: 2) {
-                            Text(abbreviatePath(dir)).font(.system(size: 8, design: .monospaced))
+                            Text(abbreviatePath(dir)).font(.system(size: 12, design: .monospaced))
 	                            Button {
 	                                state.modelStore.removeScanDirectory(dir)
 	                                state.saveModelStoreSettings()
 	                            } label: {
-	                                Image(systemName: "xmark").font(.system(size: 7))
+	                                Image(systemName: "xmark").font(.system(size: 12))
 	                            }.buttonStyle(.borderless)
                         }
                         .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 3))
+                        .background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 3))
                     }
                 }
             }.padding(.horizontal, 12).padding(.bottom, 6)
@@ -892,14 +970,14 @@ struct ModelStorePanel: View {
 
             // Model list
             if state.modelStore.isScanning {
-                VStack { Spacer(); ProgressView("Scanning...").font(.system(size: 11)); Spacer() }
+                VStack { Spacer(); ProgressView("Scanning...").font(.system(size: 13)); Spacer() }
             } else if state.modelStore.localModels.isEmpty {
                 VStack(spacing: 6) {
                     Spacer()
-                    Image(systemName: "folder.badge.questionmark").font(.system(size: 24)).foregroundStyle(.quaternary)
-                    Text("No models found").font(.system(size: 11)).foregroundStyle(.quaternary)
+                    Image(systemName: "folder.badge.questionmark").font(.system(size: 24)).foregroundStyle(Theme.creamDim)
+                    Text("No models found").font(.system(size: 13)).foregroundStyle(Theme.creamDim)
                     Text("Add directories above or download from Search HF tab")
-                        .font(.system(size: 9)).foregroundStyle(.quaternary)
+                        .font(.system(size: 12)).foregroundStyle(Theme.creamDim)
                     Spacer()
                 }.frame(maxWidth: .infinity)
             } else {
@@ -917,32 +995,32 @@ struct ModelStorePanel: View {
     private func localModelRow(_ model: DiscoveredModel) -> some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(model.displayName).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                Text(model.displayName).font(.system(size: 13, weight: .medium)).lineLimit(1)
                 HStack(spacing: 6) {
-                    Text(model.id).font(.system(size: 8, design: .monospaced)).foregroundStyle(.tertiary).lineLimit(1)
+                    Text(model.id).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.creamDim).lineLimit(1)
                 }
             }
             Spacer()
             if let quant = model.quantization {
-                Text(quant).font(.system(size: 8, weight: .medium))
+                Text(quant).font(.system(size: 12, weight: .medium))
                     .padding(.horizontal, 4).padding(.vertical, 1)
                     .background(quantColor(quant).opacity(0.15)).foregroundStyle(quantColor(quant))
                     .clipShape(RoundedRectangle(cornerRadius: 3))
             }
             if let arch = model.architecture {
-                Text(arch).font(.system(size: 8)).foregroundStyle(.secondary)
+                Text(arch).font(.system(size: 12)).foregroundStyle(Theme.creamDim)
             }
-            Text(model.size).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+            Text(model.size).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.creamDim)
             Button {
                 state.selectDiscoveredModel(model)
             } label: {
                 Text(state.selectedModel?.launchIdentity == model.launchIdentity ? "Loaded" : "Load")
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
             }.buttonStyle(.borderless)
             Button {
                 state.modelStore.deleteModel(model)
             } label: {
-                Image(systemName: "trash").font(.system(size: 9)).foregroundStyle(.red.opacity(0.6))
+                Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(.red.opacity(0.6))
             }.buttonStyle(.borderless)
         }
         .padding(.horizontal, 12).padding(.vertical, 5)
@@ -954,17 +1032,17 @@ struct ModelStorePanel: View {
     private var networkTab: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Network Servers").font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary)
+                Text("Network Servers").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
                 Spacer()
                 Button { state.modelStore.startNetworkDiscovery() } label: {
-                    Label("Scan", systemImage: "antenna.radiowaves.left.and.right").font(.system(size: 9))
+                    Label("Scan", systemImage: "antenna.radiowaves.left.and.right").font(.system(size: 12))
                 }.buttonStyle(.bordered).controlSize(.mini)
             }.padding(.horizontal, 12).padding(.vertical, 8)
 
             // Manual server entry
             HStack(spacing: 4) {
-                TextField("Host", text: $newServerHost).textFieldStyle(.roundedBorder).font(.system(size: 10))
-                TextField("Port", text: $newServerPort).textFieldStyle(.roundedBorder).font(.system(size: 10)).frame(width: 50)
+                TextField("Host", text: $newServerHost).textFieldStyle(.roundedBorder).font(.system(size: 12))
+                TextField("Port", text: $newServerPort).textFieldStyle(.roundedBorder).font(.system(size: 12)).frame(width: 50)
                 Button("Add") {
                     if let port = UInt16(newServerPort), !newServerHost.isEmpty {
                         state.modelStore.addNetworkServer(host: newServerHost, port: port)
@@ -978,10 +1056,10 @@ struct ModelStorePanel: View {
             if state.modelStore.networkModels.isEmpty {
                 VStack(spacing: 6) {
                     Spacer()
-                    Image(systemName: "network").font(.system(size: 24)).foregroundStyle(.quaternary)
-                    Text("No network servers found").font(.system(size: 11)).foregroundStyle(.quaternary)
+                    Image(systemName: "network").font(.system(size: 24)).foregroundStyle(Theme.creamDim)
+                    Text("No network servers found").font(.system(size: 13)).foregroundStyle(Theme.creamDim)
                     Text("Add a server manually or wait for Bonjour discovery")
-                        .font(.system(size: 9)).foregroundStyle(.quaternary)
+                        .font(.system(size: 12)).foregroundStyle(Theme.creamDim)
                     Spacer()
                 }.frame(maxWidth: .infinity)
             } else {
@@ -989,19 +1067,19 @@ struct ModelStorePanel: View {
                     LazyVStack(spacing: 1) {
                         ForEach(state.modelStore.networkModels) { model in
                             HStack(spacing: 8) {
-                                Image(systemName: "network").font(.system(size: 10)).foregroundStyle(.blue)
+                                Image(systemName: "network").font(.system(size: 12)).foregroundStyle(.blue)
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(model.displayName).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                                    Text(model.displayName).font(.system(size: 13, weight: .medium)).lineLimit(1)
                                     Text("\(model.networkHost ?? ""):\(model.networkPort ?? 0)")
-                                        .font(.system(size: 8, design: .monospaced)).foregroundStyle(.tertiary)
+                                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.creamDim)
                                 }
 	                                Spacer()
-	                                Text("Network").font(.system(size: 8)).foregroundStyle(.blue)
+	                                Text("Network").font(.system(size: 12)).foregroundStyle(.blue)
 	                                Button {
 	                                    state.selectDiscoveredModel(model)
 	                                } label: {
 	                                    Text(state.selectedModel?.launchIdentity == model.launchIdentity ? "Loaded" : "Load")
-	                                        .font(.system(size: 9, weight: .medium))
+	                                        .font(.system(size: 12, weight: .medium))
 	                                }.buttonStyle(.borderless)
 	                            }.padding(.horizontal, 12).padding(.vertical, 5)
 	                        }
@@ -1017,24 +1095,24 @@ struct ModelStorePanel: View {
         VStack(spacing: 0) {
             HStack(spacing: 4) {
                 TextField("Search HuggingFace for MLX models...", text: $searchText)
-                    .textFieldStyle(.roundedBorder).font(.system(size: 11))
+                    .textFieldStyle(.roundedBorder).font(.system(size: 13))
                     .onSubmit { state.modelStore.searchHuggingFace(query: searchText) }
                 Button { state.modelStore.searchHuggingFace(query: searchText) } label: {
-                    Image(systemName: "magnifyingglass").font(.system(size: 11))
+                    Image(systemName: "magnifyingglass").font(.system(size: 13))
                 }.buttonStyle(.bordered).controlSize(.mini)
             }.padding(12)
 
             Divider()
 
             if state.modelStore.isSearching {
-                VStack { Spacer(); ProgressView("Searching...").font(.system(size: 11)); Spacer() }
+                VStack { Spacer(); ProgressView("Searching...").font(.system(size: 13)); Spacer() }
             } else if state.modelStore.searchResults.isEmpty {
                 VStack(spacing: 6) {
                     Spacer()
-                    Image(systemName: "magnifyingglass").font(.system(size: 24)).foregroundStyle(.quaternary)
-                    Text("Search for MLX models on HuggingFace").font(.system(size: 11)).foregroundStyle(.quaternary)
+                    Image(systemName: "magnifyingglass").font(.system(size: 24)).foregroundStyle(Theme.creamDim)
+                    Text("Search for MLX models on HuggingFace").font(.system(size: 13)).foregroundStyle(Theme.creamDim)
                     Text("Try: \"llama 3 mlx\", \"qwen 4bit\", \"gemma mlx\"")
-                        .font(.system(size: 9)).foregroundStyle(.quaternary)
+                        .font(.system(size: 12)).foregroundStyle(Theme.creamDim)
                     Spacer()
                 }.frame(maxWidth: .infinity)
             } else {
@@ -1055,20 +1133,20 @@ struct ModelStorePanel: View {
 
         return HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(model.displayName).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                Text(model.id).font(.system(size: 8, design: .monospaced)).foregroundStyle(.tertiary).lineLimit(1)
+                Text(model.displayName).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                Text(model.id).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.creamDim).lineLimit(1)
             }
             Spacer()
             if let quant = model.quantization {
-                Text(quant).font(.system(size: 8, weight: .medium))
+                Text(quant).font(.system(size: 12, weight: .medium))
                     .padding(.horizontal, 4).padding(.vertical, 1)
                     .background(quantColor(quant).opacity(0.15)).foregroundStyle(quantColor(quant))
                     .clipShape(RoundedRectangle(cornerRadius: 3))
             }
-            Text(model.size).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+            Text(model.size).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.creamDim)
 
             if isLocal {
-                Text("Installed").font(.system(size: 8)).foregroundStyle(.green)
+                Text("Installed").font(.system(size: 12)).foregroundStyle(.green)
             } else if isDownloading {
                 ProgressView().controlSize(.small)
             } else {
@@ -1113,36 +1191,35 @@ struct GovernancePanel: View {
         VStack(spacing: 0) {
             // Header
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Governance Engine").font(.system(size: 14, weight: .semibold))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Governance Engine").font(.system(size: 16, weight: .semibold))
                     Text("Policy rules, tool interception, sandbox control")
-                        .font(.system(size: 9)).foregroundStyle(.quaternary)
+                        .font(.system(size: 12)).foregroundStyle(Theme.creamDim)
                 }
                 Spacer()
-                HStack(spacing: 4) {
-                    Circle().fill(state.governanceEnabled ? .green : .secondary.opacity(0.3))
-                        .frame(width: 6, height: 6)
+                HStack(spacing: 6) {
+                    Circle().fill(state.governanceEnabled ? .green : .secondary.opacity(0.4))
+                        .frame(width: 8, height: 8)
                     Text(state.governanceEnabled ? "Active" : "Disabled")
-                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                        .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
                 }
-            }.padding(12)
+            }.padding(14)
 
             Divider()
 
             ScrollView {
-                VStack(spacing: 16) {
+                VStack(spacing: 18) {
                     enableSection
                     if state.governanceConfig.enabled {
                         sandboxSection
-                        featureTogglesSection
+                        rulesSection
                         uiaSection
                         contextBudgetSection
-                        rulesSection
                         toolInterceptionSection
                         presetsSection
                         eventLogSection
                     }
-                }.padding(12)
+                }.padding(14)
             }
         }
     }
@@ -1158,7 +1235,7 @@ struct GovernancePanel: View {
                     config.enabled = enabled
                     state.updateGovernanceConfig(config)
                 }
-            )).toggleStyle(.switch)
+            )).toggleStyle(.switch).font(.system(size: 13))
             Spacer()
         }
     }
@@ -1166,8 +1243,8 @@ struct GovernancePanel: View {
     // MARK: - Sandbox Level
 
     private var sandboxSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Sandbox Level").font(.system(size: 11, weight: .semibold))
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Sandbox Level").font(.system(size: 14, weight: .semibold))
             Picker("", selection: Binding(
                 get: { state.governanceConfig.sandboxLevel },
                 set: { level in
@@ -1183,8 +1260,8 @@ struct GovernancePanel: View {
             }.pickerStyle(.segmented).labelsHidden()
 
             Text(sandboxDescription(state.governanceConfig.sandboxLevel))
-                .font(.system(size: 9)).foregroundStyle(.tertiary)
-        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+                .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
+        }.padding(10).background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func sandboxDescription(_ level: SandboxLevel) -> String {
@@ -1196,120 +1273,62 @@ struct GovernancePanel: View {
         }
     }
 
-    // MARK: - Packaged Governance
-
-    private var featureTogglesSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Packaged Governance").font(.system(size: 11, weight: .semibold))
-                Spacer()
-                Button("Install Rules") { installPackagedRules() }
-                    .buttonStyle(.bordered).controlSize(.mini)
-            }
-
-            Text("All runner and sub-agent traffic is expected to route through Engrave; these toggles control generated runner policy and packaged rules.")
-                .font(.system(size: 9)).foregroundStyle(.tertiary)
-
-            ForEach(GovernanceFeature.allCases) { feature in
-                Toggle(isOn: Binding(
-                    get: { state.governanceConfig.isFeatureEnabled(feature) },
-                    set: { enabled in
-                        var config = state.governanceConfig
-                        config.setFeature(feature, enabled: enabled)
-                        state.updateGovernanceConfig(config)
-                    }
-                )) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(feature.title).font(.system(size: 10, weight: .medium))
-                        Text(feature.description).font(.system(size: 8)).foregroundStyle(.tertiary)
-                    }
-                }
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-            }
-        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-
-    private var uiaSection: some View {
-        let uia = state.governanceConfig.uiaConfig ?? .default
-        return VStack(alignment: .leading, spacing: 6) {
-            Text("Engrave UIA").font(.system(size: 11, weight: .semibold))
-            Text("User-facing orchestrator for prompt decomposition, workflow DAGs, sub-agent launch steering, and progress reporting.")
-                .font(.system(size: 9)).foregroundStyle(.tertiary)
-            HStack(spacing: 8) {
-                GChip(label: "Orchestrator", value: uia.orchestratorModel)
-                GChip(label: "Cheap", value: uia.cheapModel)
-                GChip(label: "Local", value: uia.localModel)
-            }
-            HStack(spacing: 8) {
-                Label(uia.explainWorkToUser ? "User Updates" : "Silent", systemImage: "bubble.left.and.text.bubble.right")
-                Label(uia.createTaskDAG ? "Task DAG" : "No DAG", systemImage: "point.3.connected.trianglepath.dotted")
-                Label(uia.steerSubAgents ? "Steers Agents" : "No Steering", systemImage: "arrow.triangle.branch")
-            }
-            .font(.system(size: 9)).foregroundStyle(.secondary)
-        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-
-    private var contextBudgetSection: some View {
-        let budgets = state.governanceConfig.contextBudgets ?? ContextBudget.defaults
-        return VStack(alignment: .leading, spacing: 6) {
-            Text("Context Exhaustion Relay").font(.system(size: 11, weight: .semibold))
-            Text("Budgets trigger a local/cheap relay agent to compact context into a handoff brief before replacement agents continue.")
-                .font(.system(size: 9)).foregroundStyle(.tertiary)
-            ForEach(budgets.keys.sorted(), id: \.self) { key in
-                if let budget = budgets[key] {
-                    HStack {
-                        Text(key).font(.system(size: 9, weight: .medium, design: .monospaced))
-                        Spacer()
-                        Text("\(budget.maxTokens.map(String.init) ?? "—") tokens @ \(Int(budget.thresholdPercent * 100))%")
-                            .font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
-                        Text(budget.relayModel).font(.system(size: 8)).foregroundStyle(.tertiary)
-                    }
-                }
-            }
-        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-
-    private struct GChip: View {
-        let label: String
-        let value: String
-        var body: some View {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label).font(.system(size: 7, weight: .medium)).foregroundStyle(.tertiary)
-                Text(value).font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 6).padding(.vertical, 3)
-            .background(.quaternary.opacity(0.2))
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-        }
-    }
-
-    // MARK: - Policy Rules
+    // MARK: - Policy Rules (unified: features + rules in one section)
 
     private var rulesSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Policy Rules").font(.system(size: 11, weight: .semibold))
+                Text("Policy Rules").font(.system(size: 14, weight: .semibold))
                 Spacer()
+                Button("Install Packaged") { installPackagedRules() }
+                    .buttonStyle(.bordered).controlSize(.small)
                 Button { addDefaultRule() } label: {
-                    Image(systemName: "plus").font(.system(size: 9))
+                    Image(systemName: "plus").font(.system(size: 12))
                 }.buttonStyle(.borderless)
             }
 
-            if state.governanceConfig.rules.isEmpty {
-                Text("No rules configured. Add rules or use a preset below.")
-                    .font(.system(size: 9)).foregroundStyle(.quaternary)
-                    .padding(.vertical, 8)
-            } else {
+            Text("Toggle rules to control runner and sub-agent behavior through Engrave.")
+                .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
+
+            if state.governanceConfig.rules.isEmpty && !GovernanceFeature.allCases.isEmpty {
+                // Show feature toggles only when no rules are installed
+                ForEach(GovernanceFeature.allCases) { feature in
+                    featureToggleRow(feature)
+                }
+            } else if !state.governanceConfig.rules.isEmpty {
+                // Show unified rule list with enable/disable toggles
                 ForEach(Array(state.governanceConfig.rules.enumerated()), id: \.element.id) { idx, rule in
                     ruleRow(rule, index: idx)
                 }
+            } else {
+                Text("No rules configured. Click \"Install Packaged\" to add recommended rules.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.creamDim)
+                    .padding(.vertical, 8)
             }
-        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+        }.padding(10).background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func featureToggleRow(_ feature: GovernanceFeature) -> some View {
+        Toggle(isOn: Binding(
+            get: { state.governanceConfig.isFeatureEnabled(feature) },
+            set: { enabled in
+                var config = state.governanceConfig
+                config.setFeature(feature, enabled: enabled)
+                state.updateGovernanceConfig(config)
+            }
+        )) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(feature.title).font(.system(size: 12, weight: .medium))
+                Text(feature.description).font(.system(size: 13)).foregroundStyle(Theme.creamDim)
+            }
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .padding(.vertical, 2)
     }
 
     private func ruleRow(_ rule: PolicyRule, index: Int) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             Toggle("", isOn: Binding(
                 get: { rule.enabled },
                 set: { enabled in
@@ -1317,15 +1336,15 @@ struct GovernancePanel: View {
                     config.rules[index].enabled = enabled
                     state.updateGovernanceConfig(config)
                 }
-            )).toggleStyle(.switch).controlSize(.mini).labelsHidden()
+            )).toggleStyle(.switch).controlSize(.small).labelsHidden()
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(rule.name).font(.system(size: 10, weight: .medium)).lineLimit(1)
-                HStack(spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(rule.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                HStack(spacing: 6) {
                     severityBadge(rule.severity)
-                    Text(rule.trigger.rawValue).font(.system(size: 8)).foregroundStyle(.tertiary)
+                    Text(rule.trigger.rawValue).font(.system(size: 13)).foregroundStyle(Theme.creamDim)
                     if !rule.matchPatterns.isEmpty {
-                        Text("\(rule.matchPatterns.count) patterns").font(.system(size: 8)).foregroundStyle(.tertiary)
+                        Text("\(rule.matchPatterns.count) patterns").font(.system(size: 13)).foregroundStyle(Theme.creamDim)
                     }
                 }
             }
@@ -1335,9 +1354,9 @@ struct GovernancePanel: View {
                 config.rules.remove(at: index)
                 state.updateGovernanceConfig(config)
             } label: {
-                Image(systemName: "trash").font(.system(size: 9)).foregroundStyle(.red.opacity(0.6))
+                Image(systemName: "trash").font(.system(size: 13)).foregroundStyle(.red.opacity(0.7))
             }.buttonStyle(.borderless)
-        }.padding(.vertical, 3)
+        }.padding(.vertical, 4)
     }
 
     private func severityBadge(_ severity: RuleSeverity) -> some View {
@@ -1348,42 +1367,96 @@ struct GovernancePanel: View {
         case .modify: color = .yellow
         case .rewrite: color = .blue
         }
-        return Text(severity.rawValue).font(.system(size: 7, weight: .bold))
-            .padding(.horizontal, 4).padding(.vertical, 1)
-            .background(color.opacity(0.2)).foregroundStyle(color)
-            .clipShape(RoundedRectangle(cornerRadius: 2))
+        return Text(severity.rawValue).font(.system(size: 12, weight: .bold))
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .background(color.opacity(0.25)).foregroundStyle(color)
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+
+    private var uiaSection: some View {
+        let uia = state.governanceConfig.uiaConfig ?? .default
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Engrave UIA").font(.system(size: 14, weight: .semibold))
+            Text("User-facing orchestrator for prompt decomposition, workflow DAGs, sub-agent launch steering, and progress reporting.")
+                .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
+            HStack(spacing: 8) {
+                GChip(label: "Orchestrator", value: uia.orchestratorModel)
+                GChip(label: "Cheap", value: uia.cheapModel)
+                GChip(label: "Local", value: uia.localModel)
+            }
+            HStack(spacing: 10) {
+                Label(uia.explainWorkToUser ? "User Updates" : "Silent", systemImage: "bubble.left.and.text.bubble.right")
+                Label(uia.createTaskDAG ? "Task DAG" : "No DAG", systemImage: "point.3.connected.trianglepath.dotted")
+                Label(uia.steerSubAgents ? "Steers Agents" : "No Steering", systemImage: "arrow.triangle.branch")
+            }
+            .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
+        }.padding(10).background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var contextBudgetSection: some View {
+        let budgets = state.governanceConfig.contextBudgets ?? ContextBudget.defaults
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Context Exhaustion Relay").font(.system(size: 14, weight: .semibold))
+            Text("Budgets trigger a local/cheap relay agent to compact context into a handoff brief before replacement agents continue.")
+                .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
+            ForEach(budgets.keys.sorted(), id: \.self) { key in
+                if let budget = budgets[key] {
+                    HStack {
+                        Text(key).font(.system(size: 12, weight: .medium, design: .monospaced))
+                        Spacer()
+                        Text("\(budget.maxTokens.map(String.init) ?? "—") tokens @ \(Int(budget.thresholdPercent * 100))%")
+                            .font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.creamDim)
+                        Text(budget.relayModel).font(.system(size: 13)).foregroundStyle(Theme.creamDim)
+                    }
+                }
+            }
+        }.padding(10).background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private struct GChip: View {
+        let label: String
+        let value: String
+        var body: some View {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
+                Text(value).font(.system(size: 13, design: .monospaced)).foregroundStyle(.primary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Theme.bgCard)
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+        }
     }
 
     // MARK: - Tool Interception
 
     private var toolInterceptionSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Tool Interception").font(.system(size: 11, weight: .semibold))
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Tool Interception").font(.system(size: 14, weight: .semibold))
 
             // Blocked paths
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Blocked Paths").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
-                HStack(spacing: 4) {
-                    TextField("Regex pattern...", text: $newBlockedPath).textFieldStyle(.roundedBorder).font(.system(size: 9))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Blocked Paths").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
+                HStack(spacing: 6) {
+                    TextField("Regex pattern...", text: $newBlockedPath).textFieldStyle(.roundedBorder).font(.system(size: 12))
                     Button("Add") {
                         guard !newBlockedPath.isEmpty else { return }
                         var config = state.governanceConfig
                         config.blockedPaths.append(newBlockedPath)
                         state.updateGovernanceConfig(config)
                         newBlockedPath = ""
-                    }.buttonStyle(.bordered).controlSize(.mini)
+                    }.buttonStyle(.bordered).controlSize(.small)
                 }
-                FlowLayout(spacing: 3) {
+                FlowLayout(spacing: 4) {
                     ForEach(state.governanceConfig.blockedPaths, id: \.self) { path in
-                        HStack(spacing: 2) {
-                            Text(path).font(.system(size: 8, design: .monospaced))
+                        HStack(spacing: 4) {
+                            Text(path).font(.system(size: 13, design: .monospaced))
                             Button {
                                 var config = state.governanceConfig
                                 config.blockedPaths.removeAll { $0 == path }
                                 state.updateGovernanceConfig(config)
-                            } label: { Image(systemName: "xmark").font(.system(size: 6)) }.buttonStyle(.borderless)
-                        }.padding(.horizontal, 4).padding(.vertical, 2)
-                        .background(.red.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 3))
+                            } label: { Image(systemName: "xmark").font(.system(size: 12)) }.buttonStyle(.borderless)
+                        }.padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(.red.opacity(0.15)).clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                 }
             }
@@ -1391,29 +1464,29 @@ struct GovernancePanel: View {
             Divider()
 
             // Blocked commands
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Blocked Commands").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
-                HStack(spacing: 4) {
-                    TextField("Regex pattern...", text: $newBlockedCommand).textFieldStyle(.roundedBorder).font(.system(size: 9))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Blocked Commands").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
+                HStack(spacing: 6) {
+                    TextField("Regex pattern...", text: $newBlockedCommand).textFieldStyle(.roundedBorder).font(.system(size: 12))
                     Button("Add") {
                         guard !newBlockedCommand.isEmpty else { return }
                         var config = state.governanceConfig
                         config.blockedCommands.append(newBlockedCommand)
                         state.updateGovernanceConfig(config)
                         newBlockedCommand = ""
-                    }.buttonStyle(.bordered).controlSize(.mini)
+                    }.buttonStyle(.bordered).controlSize(.small)
                 }
-                FlowLayout(spacing: 3) {
+                FlowLayout(spacing: 4) {
                     ForEach(state.governanceConfig.blockedCommands, id: \.self) { cmd in
-                        HStack(spacing: 2) {
-                            Text(cmd).font(.system(size: 8, design: .monospaced))
+                        HStack(spacing: 4) {
+                            Text(cmd).font(.system(size: 13, design: .monospaced))
                             Button {
                                 var config = state.governanceConfig
                                 config.blockedCommands.removeAll { $0 == cmd }
                                 state.updateGovernanceConfig(config)
-                            } label: { Image(systemName: "xmark").font(.system(size: 6)) }.buttonStyle(.borderless)
-                        }.padding(.horizontal, 4).padding(.vertical, 2)
-                        .background(.orange.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 3))
+                            } label: { Image(systemName: "xmark").font(.system(size: 12)) }.buttonStyle(.borderless)
+                        }.padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(.orange.opacity(0.15)).clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                 }
             }
@@ -1421,47 +1494,47 @@ struct GovernancePanel: View {
             Divider()
 
             // Approval-required tools
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Require Approval For").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
-                HStack(spacing: 4) {
-                    TextField("Tool name...", text: $newApprovalTool).textFieldStyle(.roundedBorder).font(.system(size: 9))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Require Approval For").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
+                HStack(spacing: 6) {
+                    TextField("Tool name...", text: $newApprovalTool).textFieldStyle(.roundedBorder).font(.system(size: 12))
                     Button("Add") {
                         guard !newApprovalTool.isEmpty else { return }
                         var config = state.governanceConfig
                         config.requireApprovalForTools.append(newApprovalTool)
                         state.updateGovernanceConfig(config)
                         newApprovalTool = ""
-                    }.buttonStyle(.bordered).controlSize(.mini)
+                    }.buttonStyle(.bordered).controlSize(.small)
                 }
-                FlowLayout(spacing: 3) {
+                FlowLayout(spacing: 4) {
                     ForEach(state.governanceConfig.requireApprovalForTools, id: \.self) { tool in
-                        HStack(spacing: 2) {
-                            Text(tool).font(.system(size: 8, design: .monospaced))
+                        HStack(spacing: 4) {
+                            Text(tool).font(.system(size: 13, design: .monospaced))
                             Button {
                                 var config = state.governanceConfig
                                 config.requireApprovalForTools.removeAll { $0 == tool }
                                 state.updateGovernanceConfig(config)
-                            } label: { Image(systemName: "xmark").font(.system(size: 6)) }.buttonStyle(.borderless)
-                        }.padding(.horizontal, 4).padding(.vertical, 2)
-                        .background(.blue.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 3))
+                            } label: { Image(systemName: "xmark").font(.system(size: 12)) }.buttonStyle(.borderless)
+                        }.padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(.blue.opacity(0.15)).clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                 }
             }
-        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+        }.padding(10).background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: - Presets
 
     private var presetsSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Presets").font(.system(size: 11, weight: .semibold))
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Presets").font(.system(size: 14, weight: .semibold))
+            HStack(spacing: 8) {
                 Button("Strict") { state.updateGovernanceConfig(.strict) }
-                    .buttonStyle(.bordered).controlSize(.small)
+                    .buttonStyle(.bordered).controlSize(.regular)
                 Button("Standard") { state.updateGovernanceConfig(.standard) }
-                    .buttonStyle(.bordered).controlSize(.small)
+                    .buttonStyle(.bordered).controlSize(.regular)
                 Button("Minimal") { state.updateGovernanceConfig(.minimal) }
-                    .buttonStyle(.bordered).controlSize(.small)
+                    .buttonStyle(.bordered).controlSize(.regular)
                 Button("Packaged") {
                     var config = state.governanceConfig
                     config.enabled = true
@@ -1470,48 +1543,48 @@ struct GovernancePanel: View {
                     config.contextBudgets = ContextBudget.defaults
                     config.uiaConfig = .default
                     state.updateGovernanceConfig(config)
-                }.buttonStyle(.bordered).controlSize(.small)
+                }.buttonStyle(.bordered).controlSize(.regular)
                 Button("Clear All") {
                     var config = GovernanceConfig()
                     config.enabled = true
                     state.updateGovernanceConfig(config)
-                }.buttonStyle(.bordered).controlSize(.small).tint(.red)
+                }.buttonStyle(.bordered).controlSize(.regular).tint(.red)
             }
-        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+        }.padding(10).background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: - Event Log
 
     private var eventLogSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Recent Decisions").font(.system(size: 11, weight: .semibold))
+                Text("Recent Decisions").font(.system(size: 14, weight: .semibold))
                 Spacer()
                 Button { state.refreshGovernanceEvents() } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 9))
+                    Image(systemName: "arrow.clockwise").font(.system(size: 12))
                 }.buttonStyle(.borderless)
             }
 
             if state.governanceEvents.isEmpty {
                 Text("No governance decisions yet. Events appear when requests are evaluated.")
-                    .font(.system(size: 9)).foregroundStyle(.quaternary)
-                    .padding(.vertical, 4)
+                    .font(.system(size: 12)).foregroundStyle(Theme.creamDim)
+                    .padding(.vertical, 6)
             } else {
                 ForEach(state.governanceEvents.suffix(20)) { event in
-                    HStack(spacing: 6) {
-                        Circle().fill(eventColor(event.decision)).frame(width: 5, height: 5)
-                        Text(event.decision).font(.system(size: 8, weight: .bold))
+                    HStack(spacing: 8) {
+                        Circle().fill(eventColor(event.decision)).frame(width: 7, height: 7)
+                        Text(event.decision).font(.system(size: 13, weight: .bold))
                             .foregroundStyle(eventColor(event.decision))
-                        Text(event.eventType).font(.system(size: 8)).foregroundStyle(.secondary)
+                        Text(event.eventType).font(.system(size: 13)).foregroundStyle(Theme.creamDim)
                         if let rule = event.ruleName {
-                            Text(rule).font(.system(size: 8, design: .monospaced)).foregroundStyle(.tertiary)
+                            Text(rule).font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.creamDim)
                         }
                         Spacer()
-                        Text(event.timestamp, style: .time).font(.system(size: 7)).foregroundStyle(.quaternary)
-                    }.padding(.vertical, 1)
+                        Text(event.timestamp, style: .time).font(.system(size: 12)).foregroundStyle(Theme.creamDim)
+                    }.padding(.vertical, 2)
                 }
             }
-        }.padding(8).background(.quaternary.opacity(0.1)).clipShape(RoundedRectangle(cornerRadius: 6))
+        }.padding(10).background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func eventColor(_ decision: String) -> Color {
@@ -1610,9 +1683,9 @@ struct InterposerPanel: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Engrave Interposer").font(.system(size: 14, weight: .semibold))
                     Text("port \(state.interposerPort) — Anthropic · OpenAI · Gemini")
-                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(.quaternary)
+                        .font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.creamDim)
                     Text(state.interposerTarget)
-                        .font(.system(size: 9, design: .monospaced))
+                        .font(.system(size: 13, design: .monospaced))
                         .foregroundStyle(state.interposerRunning ? .green : .secondary)
                         .lineLimit(1)
                 }
@@ -1621,7 +1694,7 @@ struct InterposerPanel: View {
                     Circle().fill(state.interposerRunning ? .green : .secondary.opacity(0.3))
                         .frame(width: 6, height: 6)
                     Text(state.interposerRunning ? "Running" : "Stopped")
-                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                        .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
                 }
                 HStack(spacing: 4) {
                     Button { state.startInterposer() } label: { Label("Start", systemImage: "play.fill") }
@@ -1634,19 +1707,19 @@ struct InterposerPanel: View {
             Divider()
 
             HStack {
-                Text("Traffic Log").font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary)
+                Text("Traffic Log").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
                 Spacer()
                 Button("Clear") {
                     state.interposerLog.removeAll()
-                }.font(.system(size: 9)).buttonStyle(.borderless)
+                }.font(.system(size: 12)).buttonStyle(.borderless)
             }.padding(.horizontal, 12).padding(.vertical, 6)
 
             if state.interposerLog.isEmpty {
                 VStack(spacing: 6) {
                     Spacer()
-                    Image(systemName: "arrow.triangle.swap").font(.system(size: 24)).foregroundStyle(.quaternary)
+                    Image(systemName: "arrow.triangle.swap").font(.system(size: 24)).foregroundStyle(Theme.creamDim)
                     Text(state.interposerRunning ? "Waiting for traffic..." : "Start interposer to see logs")
-                        .font(.system(size: 11)).foregroundStyle(.quaternary)
+                        .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
                     Spacer()
                 }.frame(maxWidth: .infinity)
             } else {
@@ -1666,23 +1739,23 @@ struct LogViewer: View {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(lines.enumerated()), id: \.offset) { idx, line in
                         Text(line)
-                            .font(.system(size: 10, design: .monospaced))
+                            .font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(lc(line)).textSelection(.enabled)
                             .padding(.horizontal, 12).padding(.vertical, 1).id(idx)
                     }
                 }
             }
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.3))
+            .background(Theme.bg.opacity(0.8))
             .onChange(of: lines.count) { _, _ in
                 if let l = lines.indices.last { withAnimation(.none) { proxy.scrollTo(l, anchor: .bottom) } }
             }
         }
     }
     func lc(_ s: String) -> Color {
-        if s.contains("ERROR") || s.contains("error") { return .red }
-        if s.contains("WARN") { return .orange }
-        if s.contains("POST") || s.contains("GET") { return .teal }
-        return .secondary
+        if s.contains("ERROR") || s.contains("error") { return Theme.red }
+        if s.contains("WARN") { return Theme.yellow }
+        if s.contains("POST") || s.contains("GET") { return Theme.teal }
+        return Theme.creamDim
     }
 }
 

@@ -88,7 +88,7 @@ class WebServer {
             }
         }
 
-        return data.isEmpty || data.count >= maxRequestBytes ? nil : data
+        return data.isEmpty || data.count > maxRequestBytes ? nil : data
     }
 
     private func requestExpectedTotalBytes(_ data: Data) -> Int? {
@@ -117,17 +117,8 @@ class WebServer {
 
     private func sendRawResponse(fd: Int32, status: Int, contentType: String, body: String) {
         let statusText = statusText(for: status)
-        let httpResponse = """
-        HTTP/1.1 \(status) \(statusText)\r
-        Content-Type: \(contentType); charset=utf-8\r
-        Content-Length: \(body.utf8.count)\r
-        Access-Control-Allow-Origin: *\r
-        Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r
-        Access-Control-Allow-Headers: Content-Type\r
-        Connection: close\r
-        \r
-        \(body)
-        """
+        let headers = "HTTP/1.1 \(status) \(statusText)\r\nContent-Type: \(contentType); charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n"
+        let httpResponse = headers + body
 
         let data = Array(httpResponse.utf8)
         _ = send(fd, data, data.count, 0)

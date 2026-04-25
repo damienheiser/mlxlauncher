@@ -94,21 +94,23 @@ class ModelStore: ObservableObject {
     /// Scan all configured directories for local models
     func scanLocalModels() {
         isScanning = true
-        Task.detached { [scanDirectories] in
-            var models: [DiscoveredModel] = []
-            for dir in scanDirectories {
-                let found = Self.scanDirectory(dir)
-                models.append(contentsOf: found)
-            }
-            // Deduplicate by model ID
-            var seen = Set<String>()
-            models = models.filter { seen.insert($0.id).inserted }
-            models.sort { ($0.displayName) < ($1.displayName) }
-            await MainActor.run { [models] in
-                self.localModels = models
-                self.isScanning = false
-            }
+        Task {
+            let models = await Self.scanAllDirectories(scanDirectories)
+            self.localModels = models
+            self.isScanning = false
         }
+    }
+
+    private nonisolated static func scanAllDirectories(_ dirs: [String]) async -> [DiscoveredModel] {
+        var models: [DiscoveredModel] = []
+        for dir in dirs {
+            let found = scanDirectory(dir)
+            models.append(contentsOf: found)
+        }
+        var seen = Set<String>()
+        models = models.filter { seen.insert($0.id).inserted }
+        models.sort { ($0.displayName) < ($1.displayName) }
+        return models
     }
 
     /// Add a custom scan directory
