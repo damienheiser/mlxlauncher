@@ -347,7 +347,7 @@ public enum MessageTranslator {
     // MARK: - Gemini
 
     public static func parseGeminiRequest(_ body: [String: Any], model: String? = nil) -> CanonicalRequest {
-        let modelName = model ?? JSON.string(body["model"]) ?? "gemini-pro"
+        let modelName = model ?? JSON.string(body["model"]) ?? "unknown"
 
         // System instruction
         var system: String? = nil

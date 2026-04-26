@@ -23,6 +23,7 @@ public actor Engrave {
     private var logContinuation: AsyncStream<String>.Continuation?
     private var _logStream: AsyncStream<String>?
     private weak var _governance: (any GovernanceEvaluator)?
+    private let modelDiscovery = RunnerModelDiscovery()
 
     /// Whether the proxy server is running
     public var isRunning: Bool { _isRunning }
@@ -65,7 +66,7 @@ public actor Engrave {
             Task { await self.log(message) }
         }
 
-        let server = ProxyServer(config: _config, logger: logger, governance: _governance)
+        let server = ProxyServer(config: _config, logger: logger, governance: _governance, modelDiscovery: modelDiscovery)
         self.server = server
 
         try await server.start()

@@ -16,13 +16,15 @@ public actor ConnectionHandler {
     private let backendClient: BackendClient
     private let logger: LogHandler
     private weak var governance: (any GovernanceEvaluator)?
+    private let modelDiscovery: RunnerModelDiscovery?
 
-    public init(config: EngraveConfig, backendClient: BackendClient, logger: @escaping LogHandler, governance: (any GovernanceEvaluator)? = nil) {
+    public init(config: EngraveConfig, backendClient: BackendClient, logger: @escaping LogHandler, governance: (any GovernanceEvaluator)? = nil, modelDiscovery: RunnerModelDiscovery? = nil) {
         self.config = config
         self.routeResolver = RouteResolver(config: config)
         self.backendClient = backendClient
         self.logger = logger
         self.governance = governance
+        self.modelDiscovery = modelDiscovery
     }
 
     /// Process an HTTP request and generate a response.
@@ -42,7 +44,7 @@ public actor ConnectionHandler {
 
         // Model list — serve in the format the requesting client expects
         if request.method == "GET" && (path == "/v1/models" || path == "/v1beta/models") {
-            return handleModelList(request: request, path: path)
+            return await handleModelList(request: request, path: path)
         }
 
         // Determine source provider from path
@@ -313,7 +315,7 @@ public actor ConnectionHandler {
         return ["promptTokenCount": 0, "candidatesTokenCount": 0, "totalTokenCount": 0]
     }
 
-    private func handleModelList(request: HTTPRequest, path: String) -> ConnectionResult {
+    private func handleModelList(request: HTTPRequest, path: String) async -> ConnectionResult {
         // Collect all configured model names
         var modelNames: [String] = []
         for (_, routeTarget) in config.routes.defaults {
@@ -335,33 +337,13 @@ public actor ConnectionHandler {
             }
         }
 
-        // When a default route uses "*" (wildcard passthrough), include well-known
-        // model names for that facade so CLI tools pass model validation.
-        for (facade, route) in config.routes.defaults {
-            guard route.model == "*" else { continue }
-            let wellKnown: [String]
-            switch facade {
-            case "gemini":
-                wellKnown = [
-                    "gemini-2.0-flash", "gemini-2.0-flash-lite",
-                    "gemini-1.5-pro", "gemini-1.5-flash",
-                    "gemini-pro",
-                ]
-            case "openai", "openai_compatible":
-                wellKnown = [
-                    "gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-3.5-turbo",
-                    "o3-mini", "codex-mini-latest",
-                ]
-            case "anthropic":
-                wellKnown = [
-                    "claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022",
-                    "claude-3-haiku-20240307",
-                ]
-            default:
-                wellKnown = []
-            }
-            for name in wellKnown where !modelNames.contains(name) {
-                modelNames.append(name)
+        // Merge in models discovered from runner CLIs (e.g. `codex debug models`)
+        if let discovery = modelDiscovery {
+            let discovered = await discovery.allModels()
+            for (_, names) in discovered {
+                for name in names where !modelNames.contains(name) {
+                    modelNames.append(name)
+                }
             }
         }
 
