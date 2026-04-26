@@ -14,24 +14,32 @@ public struct HTTPRequest {
         self.body = body
     }
 
-    /// Parse raw HTTP/1.1 request data
+    /// Parse raw HTTP/1.1 request data.
+    /// Body bytes are extracted directly from raw data (no String roundtrip) to avoid
+    /// encoding-related byte loss on large payloads.
     public static func parse(_ data: Data) -> HTTPRequest? {
-        guard let str = String(data: data, encoding: .utf8) else { return nil }
+        // Find the header/body separator in raw bytes: \r\n\r\n or \n\n
+        let crlfcrlf: [UInt8] = [0x0D, 0x0A, 0x0D, 0x0A]
+        let lflf: [UInt8] = [0x0A, 0x0A]
 
-        // Split headers from body
-        let headerBodySplit: [String]
-        if let range = str.range(of: "\r\n\r\n") {
-            headerBodySplit = [String(str[str.startIndex..<range.lowerBound]), String(str[range.upperBound...])]
-        } else if let range = str.range(of: "\n\n") {
-            headerBodySplit = [String(str[str.startIndex..<range.lowerBound]), String(str[range.upperBound...])]
+        let separatorRange: Range<Data.Index>
+        if let r = data.range(of: Data(crlfcrlf)) {
+            separatorRange = r
+        } else if let r = data.range(of: Data(lflf)) {
+            separatorRange = r
         } else {
             return nil
         }
 
-        let headerSection = headerBodySplit[0]
-        let bodyStr = headerBodySplit.count > 1 ? headerBodySplit[1] : ""
+        // Extract body directly from raw bytes — no String roundtrip
+        let bodyData = data.suffix(from: separatorRange.upperBound)
 
-        let lines = headerSection.split(separator: "\n", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .carriageReturn) }
+        // Parse headers as a string (headers are always ASCII-safe)
+        guard let headerStr = String(data: data.prefix(upTo: separatorRange.lowerBound), encoding: .utf8) else {
+            return nil
+        }
+
+        let lines = headerStr.split(separator: "\n", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .carriageReturn) }
         guard !lines.isEmpty else { return nil }
 
         // Parse request line
@@ -52,8 +60,7 @@ public struct HTTPRequest {
             }
         }
 
-        let bodyData = Data(bodyStr.utf8)
-        return HTTPRequest(method: method, path: path, headers: headers, body: bodyData)
+        return HTTPRequest(method: method, path: path, headers: headers, body: Data(bodyData))
     }
 
     /// Get JSON body

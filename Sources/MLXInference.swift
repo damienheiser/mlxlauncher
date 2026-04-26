@@ -26,6 +26,10 @@ class MLXInference: ObservableObject {
             let url = URL(fileURLWithPath: path)
             let modelName = extractModelName(from: path)
 
+            // Set GPU memory cache to 75% of system RAM for optimal Metal performance
+            let totalMemory = ProcessInfo.processInfo.physicalMemory
+            MLX.Memory.cacheLimit = Int(Double(totalMemory) * 0.75)
+
             let container = try await LLMModelFactory.shared.loadContainer(
                 from: url,
                 using: SwiftTokenizerLoader()
@@ -52,30 +56,30 @@ class MLXInference: ObservableObject {
     }
 
     /// Generate a streaming chat completion. Returns an AsyncStream of text chunks.
+    /// Generation runs off-MainActor so Metal GPU compute isn't serialized with UI.
     func chatCompletion(
         messages: [(role: String, content: String)],
         maxTokens: Int = 4096,
         temperature: Float = 0.7,
         topP: Float = 0.9
     ) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
-            Task { @MainActor in
-                guard let container = self.container else {
-                    continuation.finish(throwing: InferenceError.modelNotLoaded)
-                    return
-                }
+        guard let container = self.container else {
+            return AsyncThrowingStream { $0.finish(throwing: InferenceError.modelNotLoaded) }
+        }
 
+        let chatMessages = messages.map { msg -> Chat.Message in
+            let role: Chat.Message.Role
+            switch msg.role {
+            case "system": role = .system
+            case "assistant": role = .assistant
+            default: role = .user
+            }
+            return Chat.Message(role: role, content: msg.content)
+        }
+
+        return AsyncThrowingStream { continuation in
+            Task.detached { [weak self] in
                 do {
-                    let chatMessages = messages.map { msg -> Chat.Message in
-                        let role: Chat.Message.Role
-                        switch msg.role {
-                        case "system": role = .system
-                        case "assistant": role = .assistant
-                        default: role = .user
-                        }
-                        return Chat.Message(role: role, content: msg.content)
-                    }
-
                     let input = UserInput(prompt: .chat(chatMessages))
                     let params = GenerateParameters(
                         maxTokens: maxTokens,
@@ -91,7 +95,10 @@ class MLXInference: ObservableObject {
                         case .chunk(let text):
                             continuation.yield(text)
                         case .info(let info):
-                            self.tokensPerSecond = info.tokensPerSecond
+                            let tps = info.tokensPerSecond
+                            Task { @MainActor in
+                                self?.tokensPerSecond = tps
+                            }
                         default:
                             break
                         }
@@ -119,26 +126,26 @@ class MLXInference: ObservableObject {
         let requestId = "chatcmpl-\(UUID().uuidString.prefix(12))"
         let modelName = loadedModelName ?? "mlx-local"
 
-        return AsyncThrowingStream { continuation in
-            Task { @MainActor in
-                // First chunk: role announcement
-                continuation.yield(self.sseChunk(id: requestId, model: modelName,
-                    delta: ["role": "assistant", "content": ""], finishReason: nil))
+        let stream = self.chatCompletion(
+            messages: messages,
+            maxTokens: maxTokens,
+            temperature: temperature,
+            topP: topP
+        )
 
-                let stream = self.chatCompletion(
-                    messages: messages,
-                    maxTokens: maxTokens,
-                    temperature: temperature,
-                    topP: topP
-                )
+        return AsyncThrowingStream { continuation in
+            Task.detached {
+                // First chunk: role announcement
+                continuation.yield(Self.sseChunk(id: requestId, model: modelName,
+                    delta: ["role": "assistant", "content": ""], finishReason: nil))
 
                 do {
                     for try await text in stream {
-                        continuation.yield(self.sseChunk(id: requestId, model: modelName,
+                        continuation.yield(Self.sseChunk(id: requestId, model: modelName,
                             delta: ["content": text], finishReason: nil))
                     }
 
-                    continuation.yield(self.sseChunk(id: requestId, model: modelName,
+                    continuation.yield(Self.sseChunk(id: requestId, model: modelName,
                         delta: [:], finishReason: "stop"))
                     continuation.yield("data: [DONE]\n\n")
                     continuation.finish()
@@ -200,7 +207,7 @@ class MLXInference: ObservableObject {
         URL(fileURLWithPath: path).lastPathComponent.replacingOccurrences(of: "--", with: "/")
     }
 
-    private func sseChunk(id: String, model: String, delta: [String: Any], finishReason: String?) -> String {
+    nonisolated private static func sseChunk(id: String, model: String, delta: [String: Any], finishReason: String?) -> String {
         var choice: [String: Any] = ["index": 0, "delta": delta]
         choice["finish_reason"] = finishReason
         let chunk: [String: Any] = [
