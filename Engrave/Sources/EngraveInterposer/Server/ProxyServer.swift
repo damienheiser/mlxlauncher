@@ -140,18 +140,21 @@ public actor ProxyServer {
 
         if initialData.count >= expectedTotal { return initialData }
 
-        // Need to read more
+        // Need to read more — loop until we have the full body
         var accumulated = initialData
-        let remaining = expectedTotal - accumulated.count
 
-        return await withCheckedContinuation { continuation in
-            connection.receive(minimumIncompleteLength: remaining, maximumLength: remaining) { content, _, _, error in
-                if let content = content {
-                    accumulated.append(content)
+        while accumulated.count < expectedTotal {
+            let remaining = expectedTotal - accumulated.count
+            let chunk: Data? = await withCheckedContinuation { continuation in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: remaining) { content, _, _, error in
+                    continuation.resume(returning: content)
                 }
-                continuation.resume(returning: accumulated)
             }
+            guard let chunk, !chunk.isEmpty else { break }
+            accumulated.append(chunk)
         }
+
+        return accumulated
     }
 
     private func processRequest(connection: NWConnection, data: Data, id: ObjectIdentifier) async {
