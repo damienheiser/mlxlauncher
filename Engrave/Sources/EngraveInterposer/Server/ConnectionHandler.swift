@@ -51,8 +51,15 @@ public actor ConnectionHandler {
             return .complete(HTTPResponse.error("Unknown endpoint: \(path)", status: 404))
         }
 
+        // Non-POST methods don't carry a JSON body — return a stub response
+        if request.method == "GET" || request.method == "HEAD" || request.method == "DELETE" {
+            return handleNonPostRequest(method: request.method, path: path, sourceProvider: sourceProvider)
+        }
+
         // Parse request body
         guard let body = request.jsonBody else {
+            let preview = String(data: request.body.prefix(200), encoding: .utf8) ?? "<non-utf8 \(request.body.count) bytes>"
+            logger("[engrave] ERROR: Invalid JSON body (\(request.body.count) bytes) from \(sourceProvider): \(preview)")
             return .complete(HTTPResponse.error("Invalid JSON body", status: 400))
         }
 
@@ -328,6 +335,36 @@ public actor ConnectionHandler {
             }
         }
 
+        // When a default route uses "*" (wildcard passthrough), include well-known
+        // model names for that facade so CLI tools pass model validation.
+        for (facade, route) in config.routes.defaults {
+            guard route.model == "*" else { continue }
+            let wellKnown: [String]
+            switch facade {
+            case "gemini":
+                wellKnown = [
+                    "gemini-2.0-flash", "gemini-2.0-flash-lite",
+                    "gemini-1.5-pro", "gemini-1.5-flash",
+                    "gemini-pro",
+                ]
+            case "openai", "openai_compatible":
+                wellKnown = [
+                    "gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-3.5-turbo",
+                    "o3-mini", "codex-mini-latest",
+                ]
+            case "anthropic":
+                wellKnown = [
+                    "claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022",
+                    "claude-3-haiku-20240307",
+                ]
+            default:
+                wellKnown = []
+            }
+            for name in wellKnown where !modelNames.contains(name) {
+                modelNames.append(name)
+            }
+        }
+
         // Detect format from request headers or path
         let isGemini = path.contains("v1beta") ||
             request.headers["x-goog-api-key"] != nil
@@ -377,6 +414,24 @@ public actor ConnectionHandler {
             ]
         }
         return .complete(HTTPResponse.json(["object": "list", "data": models]))
+    }
+
+    /// Handle GET/HEAD/DELETE requests to known provider endpoints.
+    /// These typically request model info or response retrieval — return a
+    /// reasonable stub so CLI tools don't crash.
+    private func handleNonPostRequest(method: String, path: String, sourceProvider: String) -> ConnectionResult {
+        // GET /v1/responses/{id} — Codex polls for response status
+        if sourceProvider == "openai" && method == "GET" {
+            let id = String(path.dropFirst("/v1/responses/".count))
+            return .complete(HTTPResponse.json([
+                "id": id.isEmpty ? "resp_stub" : id,
+                "object": "response",
+                "status": "completed",
+                "output": [] as [Any],
+            ]))
+        }
+        // Fallback: empty success
+        return .complete(HTTPResponse.json(["status": "ok"]))
     }
 
     private func normalizeBackendType(_ backend: String) -> String {

@@ -128,12 +128,35 @@ public actor ProxyServer {
             return initialData
         }
 
-        // Parse content-length from headers
+        // Parse content-length from headers (handle optional space after colon)
         let headerSection = str[str.startIndex..<headerEnd].lowercased()
-        guard let clRange = headerSection.range(of: "content-length: ") else { return initialData }
-        let afterCL = headerSection[clRange.upperBound...]
-        let clEnd = afterCL.firstIndex(where: { $0 == "\r" || $0 == "\n" }) ?? afterCL.endIndex
-        guard let contentLength = Int(afterCL[afterCL.startIndex..<clEnd]) else { return initialData }
+        let contentLength: Int
+        if let clRange = headerSection.range(of: "content-length:") {
+            let afterCL = headerSection[clRange.upperBound...].drop(while: { $0 == " " || $0 == "\t" })
+            let clEnd = afterCL.firstIndex(where: { $0 == "\r" || $0 == "\n" }) ?? afterCL.endIndex
+            guard let cl = Int(afterCL[afterCL.startIndex..<clEnd]) else { return initialData }
+            contentLength = cl
+        } else if headerSection.contains("transfer-encoding:") && headerSection.contains("chunked") {
+            // Chunked transfer encoding — read until we see the terminator "0\r\n\r\n"
+            var accumulated = initialData
+            while accumulated.count < maxSize {
+                if let s = String(data: accumulated, encoding: .utf8),
+                   s.contains("0\r\n\r\n") || s.hasSuffix("0\n\n") {
+                    // Decode chunked body
+                    return decodeChunked(accumulated)
+                }
+                let chunk: Data? = await withCheckedContinuation { continuation in
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: maxSize) { content, _, _, _ in
+                        continuation.resume(returning: content)
+                    }
+                }
+                guard let chunk, !chunk.isEmpty else { break }
+                accumulated.append(chunk)
+            }
+            return decodeChunked(accumulated)
+        } else {
+            return initialData
+        }
 
         let headerBytes = str[str.startIndex..<headerEnd].utf8.count
         let expectedTotal = headerBytes + contentLength
@@ -155,6 +178,61 @@ public actor ProxyServer {
         }
 
         return accumulated
+    }
+
+    /// Decode chunked transfer-encoded data back into headers + plain body
+    private nonisolated func decodeChunked(_ data: Data) -> Data {
+        guard let str = String(data: data, encoding: .utf8) else { return data }
+
+        // Find header/body boundary
+        let headerEndStr: String.Index
+        if let range = str.range(of: "\r\n\r\n") {
+            headerEndStr = range.upperBound
+        } else if let range = str.range(of: "\n\n") {
+            headerEndStr = range.upperBound
+        } else {
+            return data
+        }
+
+        let bodyPart = str[headerEndStr...]
+
+        // Parse chunked encoding: each chunk is "size\r\n...data...\r\n", terminated by "0\r\n"
+        var decoded = ""
+        var remaining = bodyPart[bodyPart.startIndex...]
+
+        while !remaining.isEmpty {
+            let lineEnd: Substring.Index
+            if let r = remaining.range(of: "\r\n") {
+                lineEnd = r.lowerBound
+            } else if let n = remaining.range(of: "\n") {
+                lineEnd = n.lowerBound
+            } else {
+                break
+            }
+            let sizeLine = remaining[remaining.startIndex..<lineEnd].trimmingCharacters(in: .whitespaces)
+            guard let chunkSize = Int(sizeLine, radix: 16), chunkSize > 0 else { break }
+
+            let dataStart: Substring.Index
+            if remaining[lineEnd...].hasPrefix("\r\n") {
+                dataStart = remaining.index(lineEnd, offsetBy: 2)
+            } else {
+                dataStart = remaining.index(after: lineEnd)
+            }
+
+            let chunkEnd = remaining.index(dataStart, offsetBy: chunkSize, limitedBy: remaining.endIndex) ?? remaining.endIndex
+            decoded += remaining[dataStart..<chunkEnd]
+
+            var next = chunkEnd
+            if next < remaining.endIndex && remaining[next] == "\r" { next = remaining.index(after: next) }
+            if next < remaining.endIndex && remaining[next] == "\n" { next = remaining.index(after: next) }
+            remaining = remaining[next...]
+        }
+
+        // Reconstruct: original headers + decoded body
+        let headerStr = String(str[str.startIndex..<headerEndStr])
+        var result = Data(headerStr.utf8)
+        result.append(Data(decoded.utf8))
+        return result
     }
 
     private func processRequest(connection: NWConnection, data: Data, id: ObjectIdentifier) async {
