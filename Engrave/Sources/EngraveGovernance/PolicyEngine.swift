@@ -19,7 +19,7 @@ public actor PolicyEngine {
         self.config = config
         self.context = GovernanceContext(
             sandboxLevel: config.sandboxLevel,
-            tokensBudget: config.maxTokensBudget ?? 100_000
+            tokensBudget: UInt64(config.maxTokensBudget ?? 100_000)
         )
         self.toolInterceptor = ToolInterceptor(
             sandboxLevel: config.sandboxLevel,
@@ -38,7 +38,7 @@ public actor PolicyEngine {
             agentId: context.agentId,
             sandboxLevel: newConfig.sandboxLevel,
             tokensUsed: context.tokensUsed,
-            tokensBudget: newConfig.maxTokensBudget ?? 100_000,
+            tokensBudget: UInt64(newConfig.maxTokensBudget ?? 100_000),
             model: context.model,
             requestCount: context.requestCount
         )
@@ -82,12 +82,13 @@ public actor PolicyEngine {
 
         // Token budget check
         if let budget = config.maxTokensBudget {
-            if context.tokensUsed >= budget {
-                let decision = PolicyDecision.block(reason: "Token budget exhausted (\(context.tokensUsed)/\(budget))")
+            let budget64 = UInt64(budget)
+            if context.tokensUsed >= budget64 {
+                let decision = PolicyDecision.block(reason: "Token budget exhausted (\(context.tokensUsed)/\(budget64))")
                 logEvent(eventType: "request", decision: decision)
                 return decision
             }
-            if Double(context.tokensUsed) > Double(budget) * 0.9 {
+            if Double(context.tokensUsed) > Double(budget64) * 0.9 {
                 logEvent(eventType: "request", decision: .warn(reason: "Token usage at 90%+ of budget"))
             }
         }
@@ -144,14 +145,14 @@ public actor PolicyEngine {
 
     /// Update token usage from a response
     public func recordUsage(_ usage: Usage) {
-        context.tokensUsed += usage.inputTokens + usage.outputTokens
+        context.tokensUsed += UInt64(usage.inputTokens) + UInt64(usage.outputTokens)
     }
 
     /// Reset session state
     public func resetSession() {
         context = GovernanceContext(
             sandboxLevel: config.sandboxLevel,
-            tokensBudget: config.maxTokensBudget ?? 100_000
+            tokensBudget: UInt64(config.maxTokensBudget ?? 100_000)
         )
         eventLog.removeAll()
     }
@@ -232,6 +233,7 @@ public actor PolicyEngine {
         case .block: decisionStr = "block"
         case .modify: decisionStr = "modify"
         case .rewrite: decisionStr = "rewrite"
+        case .circuitBreak: decisionStr = "circuit_break"
         }
         let event = GovernanceEvent(
             eventType: eventType,

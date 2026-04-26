@@ -77,6 +77,7 @@ public struct RouteResolver {
                 let afterModels = path.dropFirst(prefix.count)
                 if let colonIdx = afterModels.firstIndex(of: ":") {
                     let model = String(afterModels[afterModels.startIndex..<colonIdx])
+                    guard !model.isEmpty else { continue }
                     return ("gemini", model)
                 }
             }

@@ -10,6 +10,7 @@ public enum PolicyDecision: Sendable {
     case block(reason: String)
     case modify(field: String, value: String)
     case rewrite(replacementText: String)
+    case circuitBreak(breaker: String, reason: String)
 
     public var isAllowed: Bool {
         switch self {
@@ -25,6 +26,7 @@ public enum PolicyDecision: Sendable {
         case .modify: return 2
         case .rewrite: return 3
         case .block: return 4
+        case .circuitBreak: return 5
         }
     }
 
@@ -34,6 +36,7 @@ public enum PolicyDecision: Sendable {
         case .warn(let r), .block(let r): return r
         case .modify(let f, _): return "Modified: \(f)"
         case .rewrite: return "Content rewritten"
+        case .circuitBreak(let b, let r): return "Circuit breaker '\(b)': \(r)"
         }
     }
 }
@@ -60,8 +63,10 @@ public struct GovernanceContext: Sendable {
     public var sessionId: String
     public var agentId: String
     public var sandboxLevel: SandboxLevel
-    public var tokensUsed: UInt32
-    public var tokensBudget: UInt32
+    public var activeAccord: String?
+    public var tokensUsed: UInt64
+    public var tokensBudget: UInt64
+    public var taskId: String?
     public var model: String
     public var requestCount: UInt32
 
@@ -69,16 +74,20 @@ public struct GovernanceContext: Sendable {
         sessionId: String = UUID().uuidString,
         agentId: String = "default",
         sandboxLevel: SandboxLevel = .workspace,
-        tokensUsed: UInt32 = 0,
-        tokensBudget: UInt32 = 100_000,
+        activeAccord: String? = nil,
+        tokensUsed: UInt64 = 0,
+        tokensBudget: UInt64 = 100_000,
+        taskId: String? = nil,
         model: String = "unknown",
         requestCount: UInt32 = 0
     ) {
         self.sessionId = sessionId
         self.agentId = agentId
         self.sandboxLevel = sandboxLevel
+        self.activeAccord = activeAccord
         self.tokensUsed = tokensUsed
         self.tokensBudget = tokensBudget
+        self.taskId = taskId
         self.model = model
         self.requestCount = requestCount
     }
@@ -99,6 +108,8 @@ public struct GovernanceContext: Sendable {
         case "model": return model
         case "agent_id": return agentId
         case "session_id": return sessionId
+        case "active_accord": return activeAccord
+        case "task_id": return taskId
         default: return nil
         }
     }

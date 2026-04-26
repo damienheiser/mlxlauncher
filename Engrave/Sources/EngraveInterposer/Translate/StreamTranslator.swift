@@ -18,16 +18,28 @@ public class StreamTranslator {
 
     public init() {}
 
+    /// Validate a state transition. Logs a warning if the current state is unexpected.
+    /// Returns true if the state is valid.
+    private func expectState(_ expected: [StreamState], for event: String) -> Bool {
+        if expected.contains(state) { return true }
+        #if DEBUG
+        assertionFailure("StreamTranslator: unexpected state \(state) for event '\(event)' (expected \(expected))")
+        #endif
+        return false
+    }
+
     // MARK: - Anthropic SSE → Canonical
 
     public func parseAnthropicSSE(eventType: String, data: [String: Any]) -> [CanonicalStreamEvent] {
         switch eventType {
         case "message_start":
+            expectState([.idle], for: "message_start")
             state = .inMessage
             let id = JSON.string((JSON.dict(data["message"]))?["id"]) ?? "msg_unknown"
             return [.messageStart(messageId: id)]
 
         case "content_block_start":
+            expectState([.inMessage], for: "content_block_start")
             let index = JSON.uint32(data["index"]) ?? blockIndex
             blockIndex = index
             let block = JSON.dict(data["content_block"]) ?? data
@@ -51,6 +63,7 @@ public class StreamTranslator {
             return [.contentBlockStart(index: index, blockType: blockType, toolUseId: toolUseId, toolName: toolName)]
 
         case "content_block_delta":
+            expectState([.inBlock(.text), .inBlock(.toolUse), .inBlock(.thinking)], for: "content_block_delta")
             let index = JSON.uint32(data["index"]) ?? blockIndex
             let delta = JSON.dict(data["delta"]) ?? data
             let deltaType = JSON.string(delta["type"]) ?? ""
@@ -67,6 +80,7 @@ public class StreamTranslator {
             }
 
         case "content_block_stop":
+            expectState([.inBlock(.text), .inBlock(.toolUse), .inBlock(.thinking)], for: "content_block_stop")
             let index = JSON.uint32(data["index"]) ?? blockIndex
             state = .inMessage
             toolArgsBuffer = ""
@@ -90,6 +104,7 @@ public class StreamTranslator {
             return [.messageDelta(stopReason: stopReason, usage: usage)]
 
         case "message_stop":
+            expectState([.inMessage], for: "message_stop")
             state = .done
             return [.messageEnd]
 

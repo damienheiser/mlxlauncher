@@ -417,7 +417,11 @@ public enum MessageTranslator {
             } else {
                 contentStr = ""
             }
-            return .toolResult(ToolResultBlock(toolUseId: name, content: contentStr))
+            // Gemini functionResponse uses the function name, not a unique call ID.
+            // Generate a synthetic ID that includes the name for traceability.
+            // The caller must match this against the original functionCall's generated ID.
+            let syntheticId = "gemini_fr_\(name)_\(UUID().uuidString.prefix(8))"
+            return .toolResult(ToolResultBlock(toolUseId: syntheticId, content: contentStr))
         }
         return nil
     }
