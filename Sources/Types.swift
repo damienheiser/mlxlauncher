@@ -396,6 +396,331 @@ private func fetchDynamicCloudModels() -> [MLXModel] {
     return models
 }
 
+// MARK: - Engine Registry Types
+
+/// A registered inference engine endpoint (local or remote).
+/// Covers every major inference backend: cloud APIs, self-hosted servers,
+/// and local engines. Each engine has its own API format, auth, and parameter set.
+struct EngineEndpoint: Identifiable, Codable, Equatable {
+    let id: UUID
+    var name: String                // e.g. "Home Ollama", "Lab vLLM", "Local MLX"
+    var backend: EngineBackend      // which backend type (determines API format + params)
+    var baseURL: String             // e.g. "http://192.168.1.50:11434"
+    var apiKeyEnv: String?          // env var name for auth (nil = no auth required)
+    var extraHeaders: [String: String]  // additional HTTP headers
+    var isRemote: Bool              // true = network endpoint, false = local
+    var enabled: Bool
+    var parameters: EngineParameters    // engine-specific generation parameters
+
+    init(name: String, backend: EngineBackend = .chatCompletions, baseURL: String,
+         apiKeyEnv: String? = nil, extraHeaders: [String: String] = [:],
+         isRemote: Bool = true, enabled: Bool = true, parameters: EngineParameters = .defaults) {
+        self.id = UUID()
+        self.name = name
+        self.backend = backend
+        self.baseURL = baseURL
+        self.apiKeyEnv = apiKeyEnv
+        self.extraHeaders = extraHeaders
+        self.isRemote = isRemote
+        self.enabled = enabled
+        self.parameters = parameters
+    }
+
+    /// Interposer type string for BackendClient routing
+    var type: String { backend.interposerType }
+
+    static let builtins: [EngineEndpoint] = [
+        // Local
+        EngineEndpoint(name: "Local MLX", backend: .mlx,
+                       baseURL: "http://127.0.0.1:8421", isRemote: false),
+        // Cloud APIs
+        EngineEndpoint(name: "Anthropic", backend: .anthropic,
+                       baseURL: "https://api.anthropic.com", apiKeyEnv: "ANTHROPIC_API_KEY"),
+        EngineEndpoint(name: "OpenAI", backend: .openai,
+                       baseURL: "https://api.openai.com", apiKeyEnv: "OPENAI_API_KEY"),
+        EngineEndpoint(name: "Google Gemini", backend: .gemini,
+                       baseURL: "https://generativelanguage.googleapis.com", apiKeyEnv: "GOOGLE_API_KEY"),
+        // Self-hosted (disabled by default — user enables when they have one)
+        EngineEndpoint(name: "Ollama", backend: .ollama,
+                       baseURL: "http://localhost:11434", apiKeyEnv: "OLLAMA_API_KEY", enabled: false),
+        EngineEndpoint(name: "vLLM", backend: .vllm,
+                       baseURL: "http://localhost:8000", apiKeyEnv: "VLLM_API_KEY", enabled: false),
+        EngineEndpoint(name: "TGI", backend: .tgi,
+                       baseURL: "http://localhost:8080", enabled: false),
+        EngineEndpoint(name: "llama.cpp", backend: .llamaCpp,
+                       baseURL: "http://localhost:8080", enabled: false),
+        EngineEndpoint(name: "LM Studio", backend: .lmStudio,
+                       baseURL: "http://localhost:1234", enabled: false),
+        EngineEndpoint(name: "Kobold", backend: .kobold,
+                       baseURL: "http://localhost:5001", enabled: false),
+        EngineEndpoint(name: "TabbyAPI", backend: .tabbyAPI,
+                       baseURL: "http://localhost:5000", apiKeyEnv: "TABBY_API_KEY", enabled: false),
+        EngineEndpoint(name: "Aphrodite", backend: .aphrodite,
+                       baseURL: "http://localhost:2242", enabled: false),
+        EngineEndpoint(name: "Together AI", backend: .togetherAI,
+                       baseURL: "https://api.together.xyz", apiKeyEnv: "TOGETHER_API_KEY", enabled: false),
+        EngineEndpoint(name: "Fireworks AI", backend: .fireworksAI,
+                       baseURL: "https://api.fireworks.ai", apiKeyEnv: "FIREWORKS_API_KEY", enabled: false),
+        EngineEndpoint(name: "Groq", backend: .groq,
+                       baseURL: "https://api.groq.com", apiKeyEnv: "GROQ_API_KEY", enabled: false),
+        EngineEndpoint(name: "Mistral", backend: .mistral,
+                       baseURL: "https://api.mistral.ai", apiKeyEnv: "MISTRAL_API_KEY", enabled: false),
+        EngineEndpoint(name: "DeepSeek", backend: .deepseek,
+                       baseURL: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_API_KEY", enabled: false),
+        EngineEndpoint(name: "Cerebras", backend: .cerebras,
+                       baseURL: "https://api.cerebras.ai", apiKeyEnv: "CEREBRAS_API_KEY", enabled: false),
+        EngineEndpoint(name: "SambaNova", backend: .sambanova,
+                       baseURL: "https://api.sambanova.ai", apiKeyEnv: "SAMBANOVA_API_KEY", enabled: false),
+        EngineEndpoint(name: "Cohere", backend: .cohere,
+                       baseURL: "https://api.cohere.com", apiKeyEnv: "COHERE_API_KEY", enabled: false),
+        EngineEndpoint(name: "HuggingFace Inference", backend: .huggingfaceInference,
+                       baseURL: "https://api-inference.huggingface.co", apiKeyEnv: "HF_TOKEN", enabled: false),
+        EngineEndpoint(name: "HuggingFace TGI Endpoint", backend: .huggingfaceTGI,
+                       baseURL: "https://your-endpoint.endpoints.huggingface.cloud", apiKeyEnv: "HF_TOKEN", enabled: false),
+    ]
+}
+
+/// All known inference backend types.
+/// Each maps to an API wire format that the interposer knows how to translate.
+enum EngineBackend: String, Codable, CaseIterable, Equatable {
+    // Local engines
+    case mlx                    // Native Swift MLX (built-in)
+    case llamaCpp = "llama_cpp" // llama.cpp server (OpenAI-compat)
+    case lmStudio = "lm_studio" // LM Studio (OpenAI-compat)
+    case kobold                 // KoboldCpp (OpenAI-compat)
+
+    // Self-hosted OpenAI-compatible
+    case ollama                 // Ollama (OpenAI-compat + /api/generate)
+    case vllm                   // vLLM (OpenAI-compat)
+    case tgi                    // HuggingFace TGI (OpenAI-compat)
+    case tabbyAPI = "tabby_api" // TabbyAPI (OpenAI-compat + ExLlamaV2)
+    case aphrodite              // Aphrodite (OpenAI-compat, fork of vLLM)
+
+    // Cloud APIs — native formats
+    case anthropic              // Anthropic Messages API
+    case openai                 // OpenAI Chat Completions / Responses
+    case gemini                 // Google Gemini generateContent
+    case mistral                // Mistral (OpenAI-compat)
+    case cohere                 // Cohere Chat API
+    case deepseek               // DeepSeek (OpenAI-compat)
+
+    // Cloud inference platforms
+    case togetherAI = "together_ai"     // Together AI (OpenAI-compat)
+    case fireworksAI = "fireworks_ai"   // Fireworks AI (OpenAI-compat)
+    case groq                           // Groq (OpenAI-compat)
+    case cerebras                       // Cerebras (OpenAI-compat)
+    case sambanova                      // SambaNova (OpenAI-compat)
+
+    // HuggingFace
+    case huggingfaceInference = "hf_inference"  // HF Inference API
+    case huggingfaceTGI = "hf_tgi"              // HF Inference Endpoints (TGI)
+    case chatCompletions = "chat_completions"   // Generic OpenAI-compatible
+
+    /// The wire format type for the interposer's BackendClient
+    var interposerType: String {
+        switch self {
+        case .anthropic: return "anthropic"
+        case .openai: return "openai"
+        case .gemini: return "gemini"
+        case .cohere: return "chat_completions" // Cohere v2 is OpenAI-compat
+        default: return "chat_completions"      // Most backends are OpenAI-compatible
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .mlx: return "MLX (Native Swift)"
+        case .llamaCpp: return "llama.cpp"
+        case .lmStudio: return "LM Studio"
+        case .kobold: return "KoboldCpp"
+        case .ollama: return "Ollama"
+        case .vllm: return "vLLM"
+        case .tgi: return "HuggingFace TGI"
+        case .tabbyAPI: return "TabbyAPI"
+        case .aphrodite: return "Aphrodite"
+        case .anthropic: return "Anthropic"
+        case .openai: return "OpenAI"
+        case .gemini: return "Google Gemini"
+        case .mistral: return "Mistral"
+        case .cohere: return "Cohere"
+        case .deepseek: return "DeepSeek"
+        case .togetherAI: return "Together AI"
+        case .fireworksAI: return "Fireworks AI"
+        case .groq: return "Groq"
+        case .cerebras: return "Cerebras"
+        case .sambanova: return "SambaNova"
+        case .huggingfaceInference: return "HF Inference API"
+        case .huggingfaceTGI: return "HF TGI Endpoint"
+        case .chatCompletions: return "OpenAI-Compatible"
+        }
+    }
+
+    /// Parameters this backend supports
+    var supportedParameters: Set<EngineParameter> {
+        switch self {
+        case .anthropic:
+            return [.temperature, .topP, .topK, .maxTokens, .stopSequences, .systemPrompt]
+        case .openai:
+            return [.temperature, .topP, .maxTokens, .frequencyPenalty, .presencePenalty,
+                    .stopSequences, .seed, .systemPrompt, .responseFormat]
+        case .gemini:
+            return [.temperature, .topP, .topK, .maxTokens, .stopSequences, .systemPrompt]
+        case .ollama:
+            return [.temperature, .topP, .topK, .maxTokens, .repeatPenalty, .seed,
+                    .numCtx, .numGPU, .mirostat, .mirostatTau, .mirostatEta,
+                    .systemPrompt, .stopSequences, .tfsZ, .typicalP]
+        case .vllm, .aphrodite:
+            return [.temperature, .topP, .topK, .maxTokens, .frequencyPenalty,
+                    .presencePenalty, .repetitionPenalty, .seed, .stopSequences,
+                    .minP, .bestOf, .systemPrompt, .responseFormat]
+        case .tgi, .huggingfaceTGI:
+            return [.temperature, .topP, .topK, .maxTokens, .repetitionPenalty,
+                    .seed, .stopSequences, .typicalP, .watermark]
+        case .llamaCpp:
+            return [.temperature, .topP, .topK, .maxTokens, .repeatPenalty,
+                    .seed, .minP, .tfsZ, .typicalP, .mirostat, .mirostatTau,
+                    .mirostatEta, .stopSequences, .numCtx, .systemPrompt]
+        case .groq, .togetherAI, .fireworksAI, .cerebras, .sambanova,
+             .mistral, .deepseek, .cohere:
+            return [.temperature, .topP, .maxTokens, .stopSequences,
+                    .frequencyPenalty, .presencePenalty, .seed, .systemPrompt]
+        default:
+            return [.temperature, .topP, .topK, .maxTokens, .stopSequences, .systemPrompt]
+        }
+    }
+}
+
+/// All possible generation parameters across all inference backends.
+enum EngineParameter: String, Codable, CaseIterable {
+    case temperature            // 0.0-2.0, controls randomness
+    case topP = "top_p"         // 0.0-1.0, nucleus sampling
+    case topK = "top_k"         // 1-100, top-k sampling
+    case minP = "min_p"         // 0.0-1.0, minimum probability threshold
+    case maxTokens = "max_tokens"
+    case frequencyPenalty = "frequency_penalty"   // -2.0 to 2.0
+    case presencePenalty = "presence_penalty"     // -2.0 to 2.0
+    case repetitionPenalty = "repetition_penalty" // 0.0-2.0
+    case repeatPenalty = "repeat_penalty"         // Ollama/llama.cpp variant
+    case seed                   // Int, for reproducibility
+    case stopSequences = "stop" // [String]
+    case systemPrompt = "system_prompt"
+    case responseFormat = "response_format"       // "json_object", "text"
+    case numCtx = "num_ctx"     // Context window size (Ollama/llama.cpp)
+    case numGPU = "num_gpu"     // GPU layers (Ollama)
+    case mirostat               // 0/1/2 (Ollama/llama.cpp)
+    case mirostatTau = "mirostat_tau"
+    case mirostatEta = "mirostat_eta"
+    case tfsZ = "tfs_z"         // Tail-free sampling
+    case typicalP = "typical_p" // Locally typical sampling
+    case bestOf = "best_of"     // Generate N, return best (vLLM)
+    case watermark              // TGI watermarking
+
+    var displayName: String {
+        switch self {
+        case .temperature: return "Temperature"
+        case .topP: return "Top P"
+        case .topK: return "Top K"
+        case .minP: return "Min P"
+        case .maxTokens: return "Max Tokens"
+        case .frequencyPenalty: return "Frequency Penalty"
+        case .presencePenalty: return "Presence Penalty"
+        case .repetitionPenalty: return "Repetition Penalty"
+        case .repeatPenalty: return "Repeat Penalty"
+        case .seed: return "Seed"
+        case .stopSequences: return "Stop Sequences"
+        case .systemPrompt: return "System Prompt"
+        case .responseFormat: return "Response Format"
+        case .numCtx: return "Context Window"
+        case .numGPU: return "GPU Layers"
+        case .mirostat: return "Mirostat"
+        case .mirostatTau: return "Mirostat Tau"
+        case .mirostatEta: return "Mirostat Eta"
+        case .tfsZ: return "TFS-Z"
+        case .typicalP: return "Typical P"
+        case .bestOf: return "Best Of"
+        case .watermark: return "Watermark"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .temperature: return "Controls randomness. Higher = more creative, lower = more deterministic."
+        case .topP: return "Nucleus sampling. Only consider tokens with cumulative probability above this."
+        case .topK: return "Only consider the top K most likely tokens."
+        case .minP: return "Minimum probability threshold relative to the most likely token."
+        case .maxTokens: return "Maximum number of tokens to generate."
+        case .frequencyPenalty: return "Penalize tokens based on their frequency in the text so far."
+        case .presencePenalty: return "Penalize tokens based on whether they appear in the text so far."
+        case .repetitionPenalty: return "Penalize repeated tokens. 1.0 = no penalty."
+        case .repeatPenalty: return "Penalize repeated tokens (Ollama/llama.cpp variant)."
+        case .seed: return "Random seed for reproducible generation."
+        case .stopSequences: return "Stop generation when these strings are encountered."
+        case .systemPrompt: return "System-level instructions prepended to the conversation."
+        case .responseFormat: return "Force output format (e.g. JSON mode)."
+        case .numCtx: return "Context window size in tokens."
+        case .numGPU: return "Number of GPU layers to offload."
+        case .mirostat: return "Mirostat sampling mode (0=disabled, 1=v1, 2=v2)."
+        case .mirostatTau: return "Target perplexity for Mirostat."
+        case .mirostatEta: return "Learning rate for Mirostat."
+        case .tfsZ: return "Tail-free sampling parameter. 1.0 = disabled."
+        case .typicalP: return "Locally typical sampling threshold."
+        case .bestOf: return "Generate N completions and return the best."
+        case .watermark: return "Enable text watermarking (TGI)."
+        }
+    }
+}
+
+/// Engine-specific parameter overrides. Stored per-engine, sent with requests.
+struct EngineParameters: Codable, Equatable {
+    var temperature: Double?
+    var topP: Double?
+    var topK: Int?
+    var minP: Double?
+    var maxTokens: Int?
+    var frequencyPenalty: Double?
+    var presencePenalty: Double?
+    var repetitionPenalty: Double?
+    var seed: Int?
+    var stopSequences: [String]?
+    var numCtx: Int?
+    var numGPU: Int?
+    var mirostat: Int?
+    var mirostatTau: Double?
+    var mirostatEta: Double?
+    var tfsZ: Double?
+    var typicalP: Double?
+    var responseFormat: String?
+
+    static let defaults = EngineParameters()
+}
+
+/// Maps a model name (or prefix) to an engine endpoint.
+struct ModelRouteMapping: Identifiable, Codable, Equatable {
+    let id: UUID
+    var pattern: String             // model name prefix, e.g. "claude-", "ollama/", "my-lab/"
+    var engineName: String          // references EngineEndpoint.name
+    var stripPrefix: Bool           // if true, "ollama/mistral" → "mistral" when forwarding
+    var description: String?
+
+    init(pattern: String, engineName: String, stripPrefix: Bool = false, description: String? = nil) {
+        self.id = UUID()
+        self.pattern = pattern
+        self.engineName = engineName
+        self.stripPrefix = stripPrefix
+        self.description = description
+    }
+
+    static let builtins: [ModelRouteMapping] = [
+        ModelRouteMapping(pattern: "claude-", engineName: "Anthropic", description: "Anthropic Claude models"),
+        ModelRouteMapping(pattern: "gpt-", engineName: "OpenAI", description: "OpenAI GPT models"),
+        ModelRouteMapping(pattern: "o1-", engineName: "OpenAI", description: "OpenAI o1 reasoning"),
+        ModelRouteMapping(pattern: "o3-", engineName: "OpenAI", description: "OpenAI o3 reasoning"),
+        ModelRouteMapping(pattern: "o4-", engineName: "OpenAI", description: "OpenAI o4 reasoning"),
+        ModelRouteMapping(pattern: "chatgpt-", engineName: "OpenAI", description: "OpenAI ChatGPT models"),
+        ModelRouteMapping(pattern: "gemini-", engineName: "Google Gemini", description: "Google Gemini models"),
+    ]
+}
+
 // MARK: - UIA Chat Types
 
 struct UIAChatMessage: Identifiable, Codable {

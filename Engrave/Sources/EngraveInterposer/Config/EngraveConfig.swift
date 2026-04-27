@@ -45,20 +45,60 @@ public struct EngraveConfig: Codable, Sendable {
     // MARK: - Route Config
 
     public struct RouteConfig: Codable, Sendable {
-        /// Default routes per source facade
+        /// Default routes per source facade (fallback when model-based routing has no match)
         public var defaults: [String: RouteTarget]
-        /// Model name aliases
+        /// Model name aliases (highest priority, exact match)
         public var aliases: [String: RouteTarget]
+        /// Model-to-provider mapping rules (matched by prefix/pattern, second priority)
+        /// Each rule maps a model name prefix to a provider backend.
+        public var modelRoutes: [ModelRoute]
 
-        public init(defaults: [String: RouteTarget] = [:], aliases: [String: RouteTarget] = [:]) {
+        public init(defaults: [String: RouteTarget] = [:], aliases: [String: RouteTarget] = [:],
+                    modelRoutes: [ModelRoute] = ModelRoute.builtins) {
             self.defaults = defaults
             self.aliases = aliases
+            self.modelRoutes = modelRoutes
         }
 
         enum CodingKeys: String, CodingKey {
             case defaults = "default"
             case aliases
+            case modelRoutes = "model_routes"
         }
+    }
+
+    /// Maps model name patterns to provider backends.
+    /// The interposer checks these BEFORE facade-based defaults, allowing any
+    /// runner to reach any model/provider without config changes or restarts.
+    public struct ModelRoute: Codable, Sendable {
+        /// Prefix or exact model name to match (case-insensitive)
+        public var pattern: String
+        /// Which provider backend to route to
+        public var provider: String
+
+        public init(pattern: String, provider: String) {
+            self.pattern = pattern
+            self.provider = provider
+        }
+
+        /// Built-in model-to-provider mappings covering major providers.
+        /// Order matters — first match wins.
+        public static let builtins: [ModelRoute] = [
+            // Anthropic models
+            .init(pattern: "claude-", provider: "anthropic"),
+            // OpenAI models
+            .init(pattern: "gpt-", provider: "openai"),
+            .init(pattern: "o1-", provider: "openai"),
+            .init(pattern: "o3-", provider: "openai"),
+            .init(pattern: "o4-", provider: "openai"),
+            .init(pattern: "chatgpt-", provider: "openai"),
+            // Google models
+            .init(pattern: "gemini-", provider: "gemini"),
+            // Ollama (remote) — prefix convention: "ollama/"
+            .init(pattern: "ollama/", provider: "ollama"),
+            // vLLM (remote) — prefix convention: "vllm/"
+            .init(pattern: "vllm/", provider: "vllm"),
+        ]
     }
 
     public struct RouteTarget: Codable, Sendable {

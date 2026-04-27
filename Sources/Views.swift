@@ -121,6 +121,7 @@ struct ContentView: View {
         case uiaChat = "UIA Chat"
         case hitl = "HITL"
         case dashboard = "Dashboard"
+        case engines = "Engines"
         case settings = "Settings"
         var id: String { rawValue }
         var icon: String {
@@ -134,6 +135,7 @@ struct ContentView: View {
             case .uiaChat: return "bubble.left.and.text.bubble.right"
             case .hitl: return "hand.raised"
             case .dashboard: return "rectangle.3.group"
+            case .engines: return "engine.combustion"
             case .settings: return "gearshape"
             }
         }
@@ -316,6 +318,7 @@ struct ContentView: View {
             case .uiaChat: UIAChatPanel(state: state)
             case .hitl: HITLPanel(state: state)
             case .dashboard: DashboardPanel(state: state)
+            case .engines: EngineRegistryPanel(state: state)
             case .settings: SettingsPanel(state: state)
             }
         }
@@ -341,6 +344,7 @@ struct ContentView: View {
         case .uiaChat: UIAChatPanel(state: state)
         case .hitl: HITLPanel(state: state)
         case .dashboard: DashboardPanel(state: state)
+        case .engines: EngineRegistryPanel(state: state)
         case .settings: SettingsPanel(state: state)
         }
     }

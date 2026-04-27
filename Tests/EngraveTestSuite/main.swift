@@ -423,23 +423,28 @@ tests.append(("MessageTranslator round-trip: parse + serialize for all 4 formats
     }
 }))
 
-tests.append(("Engrave config builds with all 4 provider backends", {
-    try expect(services.contains("\"local\": .init(type: \"chat_completions\""), "Missing local provider config")
-    try expect(services.contains("\"anthropic\": .init(type: \"anthropic\""), "Missing anthropic provider config")
-    try expect(services.contains("\"openai\": .init(type: \"openai\""), "Missing openai provider config")
-    try expect(services.contains("\"google\": .init(type: \"gemini\""), "Missing google/gemini provider config")
+tests.append(("Engrave config builds providers from engine registry", {
+    // Providers are built dynamically from engineEndpoints, not hardcoded
+    try expect(services.contains("engineEndpoints"), "Must build providers from engine registry")
+    try expect(services.contains("engine.type"), "Must use engine.type for provider config")
+    try expect(services.contains("engine.baseURL"), "Must use engine.baseURL for provider config")
+    // Core providers ensured even if deleted
+    try expect(services.contains("local_mlx"), "Must ensure local MLX provider exists as fallback")
 }))
 
-tests.append(("Engrave config has correct routes for each model source", {
-    // Local models route all facades to local backend
-    try expect(services.contains("case .local, .network:"), "Missing local/network route case")
-    // Cloud models route to matching cloud backends
-    try expect(services.contains("case .anthropic:"), "Missing anthropic route case")
-    try expect(services.contains("case .openai:"), "Missing openai route case")
-    try expect(services.contains("case .google:"), "Missing google route case")
-    // Each route block covers all 4 facades
-    let facadeCount = count(services, "\"gemini\":")
-    try expect(facadeCount >= 4, "Must have gemini facade in all route blocks (found \(facadeCount))")
+tests.append(("Engrave config uses universal model-based routing", {
+    // Model routes built from registry + builtins
+    try expect(services.contains("ModelRoute.builtins"), "Must include built-in model routes")
+    try expect(services.contains("modelRouteMappings"), "Must include user-defined model route mappings")
+    // All facades fall through to local as default
+    try expect(services.contains("\"anthropic\": local"), "Default anthropic facade must route to local")
+    try expect(services.contains("\"openai\": local"), "Default openai facade must route to local")
+    try expect(services.contains("\"gemini\": local"), "Default gemini facade must route to local")
+    // Engine registry types exist
+    let types = try read(root.appendingPathComponent("Sources/Types.swift").path)
+    try expect(types.contains("enum EngineBackend"), "Must define EngineBackend enum")
+    try expect(types.contains("enum EngineParameter"), "Must define EngineParameter enum")
+    try expect(types.contains("struct EngineParameters"), "Must define EngineParameters struct")
 }))
 
 tests.append(("Runner command generation for all 5 runners", {

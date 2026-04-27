@@ -31,6 +31,10 @@ class AppState: ObservableObject {
     // Settings (named appSettings to avoid conflict with settings(for:) method)
     @Published var appSettings = SettingsManager()
 
+    // Engine Registry — registered inference engines and model→engine mappings
+    @Published var engineEndpoints: [EngineEndpoint] = EngineEndpoint.builtins
+    @Published var modelRouteMappings: [ModelRouteMapping] = ModelRouteMapping.builtins
+
     // UIA Chat
     @Published var uiaChatMessages: [UIAChatMessage] = []
     @Published var uiaTaskGraph: UIATaskGraph? = nil
@@ -73,6 +77,7 @@ class AppState: ObservableObject {
         loadModelStoreSettings()
         loadProfiles()
         loadPrompts()
+        loadEngineRegistry()
     }
 
     /// Call this once the view is on screen — never from init().
@@ -396,60 +401,69 @@ class AppState: ObservableObject {
     }
 
     private func engraveConfig(for model: MLXModel) -> EngraveConfig {
-        // The interposer is the governance engine — ALL traffic routes through it.
-        // It hosts local + cloud backends so any runner ↔ model combination works:
-        //   Claude → Anthropic cloud, Codex → local MLX, Gemini → Google cloud, etc.
+        // The interposer is the universal governance + routing engine.
+        // ALL providers are registered at startup and stay available forever.
+        // Routing is per-request based on the model name in the request body:
+        //   "claude-opus-4-6"  → anthropic backend
+        //   "gpt-5.5"          → openai backend
+        //   "gemini-3.0-pro"   → google/gemini backend
+        //   "Qwen/..."         → local MLX backend
+        //   "ollama/mistral"   → remote ollama backend
+        //   "vllm/kimi-k2.6"   → remote vLLM backend
+        //
+        // Multiple runners can each talk to different models simultaneously.
+        // The interposer NEVER needs to restart for model/provider changes.
 
         let modelName = serverStatus.modelName ?? model.id
         let localModels = [modelName, "gemini-2.5-flash", "gemini-2.5-pro"]
 
-        // All available backends
-        let providers: [String: EngraveConfig.ProviderConfig] = [
-            "local": .init(type: "chat_completions", baseURL: "http://127.0.0.1:8421",
-                           apiKeyEnv: "MLX_LAUNCHER_API_KEY", models: localModels),
-            "anthropic": .init(type: "anthropic", baseURL: "https://api.anthropic.com",
-                               apiKeyEnv: "ANTHROPIC_API_KEY"),
-            "openai": .init(type: "openai", baseURL: "https://api.openai.com",
-                            apiKeyEnv: "OPENAI_API_KEY"),
-            "google": .init(type: "gemini", baseURL: "https://generativelanguage.googleapis.com",
-                            apiKeyEnv: "GOOGLE_API_KEY"),
+        // Build providers from the engine registry — user-configurable, persisted.
+        // Every registered engine becomes a provider backend in the interposer.
+        var providers: [String: EngraveConfig.ProviderConfig] = [:]
+        for engine in engineEndpoints where engine.enabled {
+            let key = engine.name.lowercased().replacingOccurrences(of: " ", with: "_")
+            var config = EngraveConfig.ProviderConfig(
+                type: engine.type, baseURL: engine.baseURL, apiKeyEnv: engine.apiKeyEnv
+            )
+            // Local MLX gets the model list
+            if !engine.isRemote && engine.type == "chat_completions" {
+                config.models = localModels
+            }
+            providers[key] = config
+        }
+        // Ensure core providers exist even if user deleted them from registry
+        if providers["local_mlx"] == nil && providers["local"] == nil {
+            providers["local_mlx"] = .init(type: "chat_completions", baseURL: "http://127.0.0.1:8421",
+                                            apiKeyEnv: "MLX_LAUNCHER_API_KEY", models: localModels)
+        }
+
+        // Facade defaults: when model-name routing has no match, fall through here.
+        // Default is local MLX — unknown models go to the local inference engine.
+        let localKey = providers.keys.first { $0.contains("local") || $0.contains("mlx") } ?? "local_mlx"
+        let local = EngraveConfig.RouteTarget(backend: localKey, model: "*", provider: localKey)
+        let defaults: [String: EngraveConfig.RouteTarget] = [
+            "anthropic": local,
+            "openai": local,
+            "openai_compatible": local,
+            "gemini": local,
         ]
 
-        // Route each source facade to the appropriate backend.
-        // Cloud models → native cloud backend.  Local models → local MLX.
-        let routes: [String: EngraveConfig.RouteTarget]
-        switch model.source {
-        case .local, .network:
-            // All API formats translate and route to local MLX
-            let local = EngraveConfig.RouteTarget(backend: "local", model: "*", provider: "local")
-            routes = ["anthropic": local, "openai": local, "openai_compatible": local, "gemini": local]
-        case .anthropic:
-            // Each source facade → its matching cloud backend
-            routes = [
-                "anthropic": .init(backend: "anthropic", model: "*", provider: "anthropic"),
-                "openai": .init(backend: "openai", model: "*", provider: "openai"),
-                "openai_compatible": .init(backend: "openai", model: "*", provider: "openai"),
-                "gemini": .init(backend: "google", model: "*", provider: "google"),
-            ]
-        case .openai:
-            routes = [
-                "anthropic": .init(backend: "anthropic", model: "*", provider: "anthropic"),
-                "openai": .init(backend: "openai", model: "*", provider: "openai"),
-                "openai_compatible": .init(backend: "openai", model: "*", provider: "openai"),
-                "gemini": .init(backend: "google", model: "*", provider: "google"),
-            ]
-        case .google:
-            routes = [
-                "anthropic": .init(backend: "anthropic", model: "*", provider: "anthropic"),
-                "openai": .init(backend: "openai", model: "*", provider: "openai"),
-                "openai_compatible": .init(backend: "openai", model: "*", provider: "openai"),
-                "gemini": .init(backend: "google", model: "*", provider: "google"),
-            ]
+        // Model routes: built from the engine registry's model→engine mappings.
+        // These are checked BEFORE facade defaults, enabling any runner
+        // to reach any provider based solely on the model name.
+        // Built-in routes + user-defined routes are merged.
+        var modelRoutes = EngraveConfig.ModelRoute.builtins
+        for mapping in modelRouteMappings {
+            let engineKey = mapping.engineName.lowercased().replacingOccurrences(of: " ", with: "_")
+            // Only add if the engine is registered as a provider
+            if providers[engineKey] != nil {
+                modelRoutes.append(EngraveConfig.ModelRoute(pattern: mapping.pattern, provider: engineKey))
+            }
         }
 
         return EngraveConfig(
             server: .init(port: interposerPort),
-            routes: .init(defaults: routes),
+            routes: .init(defaults: defaults, modelRoutes: modelRoutes),
             providers: providers
         )
     }
@@ -635,13 +649,10 @@ class AppState: ObservableObject {
             startServer(model: model)
         }
         // The interposer is always required (governance engine).
-        // Restart it if the routing target changed (e.g. local → cloud or vice versa).
+        // It NEVER restarts for model changes — all providers are registered
+        // at startup and routing is per-request based on model name.
         if usesInterposer {
-            let newTarget = targetDescription(for: model)
-            if interposerRunning && newTarget != interposerTarget {
-                interposerLog.append("Routing changed → restarting interposer for \(newTarget)")
-                stopInterposer()
-            }
+            interposerTarget = targetDescription(for: model)
             if !interposerRunning {
                 startInterposer()
             }
@@ -821,6 +832,53 @@ class AppState: ObservableObject {
 
     private struct ModelStoreSettings: Codable {
         let scanDirectories: [String]
+    }
+
+    // MARK: - Engine Registry Persistence
+
+    private func loadEngineRegistry() {
+        let endpointsPath = "\(configDir)/engine-endpoints.json"
+        let routesPath = "\(configDir)/model-routes.json"
+        if let data = FileManager.default.contents(atPath: endpointsPath),
+           let loaded = try? JSONDecoder().decode([EngineEndpoint].self, from: data), !loaded.isEmpty {
+            engineEndpoints = loaded
+        }
+        if let data = FileManager.default.contents(atPath: routesPath),
+           let loaded = try? JSONDecoder().decode([ModelRouteMapping].self, from: data), !loaded.isEmpty {
+            modelRouteMappings = loaded
+        }
+    }
+
+    func saveEngineRegistry() {
+        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(engineEndpoints) {
+            try? data.write(to: URL(fileURLWithPath: "\(configDir)/engine-endpoints.json"))
+        }
+        if let data = try? encoder.encode(modelRouteMappings) {
+            try? data.write(to: URL(fileURLWithPath: "\(configDir)/model-routes.json"))
+        }
+    }
+
+    func addEngine(_ engine: EngineEndpoint) {
+        engineEndpoints.append(engine)
+        saveEngineRegistry()
+    }
+
+    func removeEngine(id: UUID) {
+        engineEndpoints.removeAll { $0.id == id }
+        saveEngineRegistry()
+    }
+
+    func addModelRoute(_ route: ModelRouteMapping) {
+        modelRouteMappings.append(route)
+        saveEngineRegistry()
+    }
+
+    func removeModelRoute(id: UUID) {
+        modelRouteMappings.removeAll { $0.id == id }
+        saveEngineRegistry()
     }
 
     // MARK: - Governance Artifacts
