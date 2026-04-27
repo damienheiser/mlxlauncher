@@ -97,9 +97,12 @@ public actor ConnectionHandler {
         let route = routeResolver.resolve(sourceProvider: sourceProvider, model: canonical.model)
         logger("[engrave] route: \(sourceProvider)/\(canonical.model) → \(route.backend)/\(route.model)")
 
+        // Forward incoming auth headers so CLI subscription tokens pass through
+        let clientAuth = extractAuthHeaders(from: request.headers)
+
         // Prepare backend request
         guard let prepared = await backendClient.prepareBackendRequest(
-            route: route, canonicalRequest: canonical, config: config
+            route: route, canonicalRequest: canonical, config: config, clientAuthHeaders: clientAuth
         ) else {
             logger("[engrave] ERROR: failed to prepare backend request for route \(route.backend)/\(route.model)")
             return .complete(HTTPResponse.error("Failed to prepare backend request", status: 500))
@@ -423,6 +426,18 @@ public actor ConnectionHandler {
         case "gemini_subscription", "gemini_cli": return "gemini"
         default: return backend
         }
+    }
+
+    /// Extract auth-related headers from the incoming client request.
+    /// These are forwarded to the backend so CLI subscription OAuth tokens
+    /// and user-supplied API keys pass through the interposer transparently.
+    private func extractAuthHeaders(from headers: [String: String]) -> [String: String] {
+        var auth: [String: String] = [:]
+        if let v = headers["authorization"] { auth["authorization"] = v }
+        if let v = headers["x-api-key"] { auth["x-api-key"] = v }
+        if let v = headers["anthropic-version"] { auth["anthropic-version"] = v }
+        if let v = headers["x-goog-api-key"] { auth["x-goog-api-key"] = v }
+        return auth
     }
 }
 

@@ -220,9 +220,12 @@ public enum MessageTranslator {
                 }
             }
 
-            if !textParts.isEmpty || !toolCalls.isEmpty || toolResults.isEmpty {
+            // Always emit the role message for user messages (many chat
+            // templates require at least one "user" entry).  For assistant
+            // messages, only emit when there's text or tool_calls.
+            if role == "user" || !textParts.isEmpty || !toolCalls.isEmpty || toolResults.isEmpty {
                 var message: [String: Any] = ["role": role]
-                message["content"] = textParts.isEmpty ? NSNull() : textParts.joined()
+                message["content"] = textParts.isEmpty ? "" : textParts.joined()
                 if !toolCalls.isEmpty { message["tool_calls"] = toolCalls }
                 msgs.append(message)
             }

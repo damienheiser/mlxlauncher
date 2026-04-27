@@ -376,26 +376,61 @@ class AppState: ObservableObject {
     }
 
     private func engraveConfig(for model: MLXModel) -> EngraveConfig {
-        // Use wildcard "*" routes so the interposer forwards ANY model name
-        // without needing to restart when the selected model changes.
-        let localRoute = EngraveConfig.RouteTarget(backend: "local", model: "*", provider: "local")
+        // The interposer is the governance engine — ALL traffic routes through it.
+        // It hosts local + cloud backends so any runner ↔ model combination works:
+        //   Claude → Anthropic cloud, Codex → local MLX, Gemini → Google cloud, etc.
+
+        let modelName = serverStatus.modelName ?? model.id
+        let localModels = [modelName, "gemini-2.5-flash", "gemini-2.5-pro"]
+
+        // All available backends
+        let providers: [String: EngraveConfig.ProviderConfig] = [
+            "local": .init(type: "chat_completions", baseURL: "http://127.0.0.1:8421",
+                           apiKeyEnv: "MLX_LAUNCHER_API_KEY", models: localModels),
+            "anthropic": .init(type: "anthropic", baseURL: "https://api.anthropic.com",
+                               apiKeyEnv: "ANTHROPIC_API_KEY"),
+            "openai": .init(type: "openai", baseURL: "https://api.openai.com",
+                            apiKeyEnv: "OPENAI_API_KEY"),
+            "google": .init(type: "gemini", baseURL: "https://generativelanguage.googleapis.com",
+                            apiKeyEnv: "GOOGLE_API_KEY"),
+        ]
+
+        // Route each source facade to the appropriate backend.
+        // Cloud models → native cloud backend.  Local models → local MLX.
+        let routes: [String: EngraveConfig.RouteTarget]
+        switch model.source {
+        case .local, .network:
+            // All API formats translate and route to local MLX
+            let local = EngraveConfig.RouteTarget(backend: "local", model: "*", provider: "local")
+            routes = ["anthropic": local, "openai": local, "openai_compatible": local, "gemini": local]
+        case .anthropic:
+            // Each source facade → its matching cloud backend
+            routes = [
+                "anthropic": .init(backend: "anthropic", model: "*", provider: "anthropic"),
+                "openai": .init(backend: "openai", model: "*", provider: "openai"),
+                "openai_compatible": .init(backend: "openai", model: "*", provider: "openai"),
+                "gemini": .init(backend: "google", model: "*", provider: "google"),
+            ]
+        case .openai:
+            routes = [
+                "anthropic": .init(backend: "anthropic", model: "*", provider: "anthropic"),
+                "openai": .init(backend: "openai", model: "*", provider: "openai"),
+                "openai_compatible": .init(backend: "openai", model: "*", provider: "openai"),
+                "gemini": .init(backend: "google", model: "*", provider: "google"),
+            ]
+        case .google:
+            routes = [
+                "anthropic": .init(backend: "anthropic", model: "*", provider: "anthropic"),
+                "openai": .init(backend: "openai", model: "*", provider: "openai"),
+                "openai_compatible": .init(backend: "openai", model: "*", provider: "openai"),
+                "gemini": .init(backend: "google", model: "*", provider: "google"),
+            ]
+        }
 
         return EngraveConfig(
-            server: EngraveConfig.ServerConfig(port: interposerPort),
-            routes: EngraveConfig.RouteConfig(defaults: [
-                "anthropic": localRoute,
-                "openai": localRoute,
-                "openai_compatible": localRoute,
-                "gemini": localRoute,
-            ]),
-            providers: [
-                "local": EngraveConfig.ProviderConfig(
-                    type: "chat_completions",
-                    baseURL: "http://127.0.0.1:8421",
-                    apiKeyEnv: "MLX_LAUNCHER_API_KEY",
-                    models: nil
-                ),
-            ]
+            server: .init(port: interposerPort),
+            routes: .init(defaults: routes),
+            providers: providers
         )
     }
 
@@ -579,9 +614,17 @@ class AppState: ObservableObject {
         if model.source == .local && serverStatus.state != .running {
             startServer(model: model)
         }
-        // Start interposer only if not running. Never restart on Launch.
-        if usesInterposer && !interposerRunning {
-            startInterposer()
+        // The interposer is always required (governance engine).
+        // Restart it if the routing target changed (e.g. local → cloud or vice versa).
+        if usesInterposer {
+            let newTarget = targetDescription(for: model)
+            if interposerRunning && newTarget != interposerTarget {
+                interposerLog.append("Routing changed → restarting interposer for \(newTarget)")
+                stopInterposer()
+            }
+            if !interposerRunning {
+                startInterposer()
+            }
         }
 
         let environment = command.environment.merging(governanceRunnerEnvironment()) { current, _ in current }
@@ -590,7 +633,7 @@ class AppState: ObservableObject {
         }
         let pathExport = "export PATH=\"\(mlxBinDir):/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.local/bin:\(NSHomeDirectory())/.cargo/bin:$PATH\""
         let waitForMLX = model.source == .local
-            ? "echo 'Waiting for MLX inference on port \(serverStatus.port)...' && _t=0 && until curl -fsS \(shellQuote("http://127.0.0.1:\(serverStatus.port)/v1/models")) >/dev/null 2>&1; do sleep 1; _t=$((_t+1)); if [ $_t -ge 120 ]; then echo 'ERROR: MLX inference not ready after 120s'; exit 1; fi; done"
+            ? "echo 'Waiting for MLX inference on port \(serverStatus.port)...' && _t=0 && until curl -fsS \(shellQuote("http://127.0.0.1:\(serverStatus.port)/v1/models")) 2>/dev/null | grep -q '\"id\"'; do sleep 1; _t=$((_t+1)); if [ $_t -ge 120 ]; then echo 'ERROR: MLX inference not ready after 120s'; exit 1; fi; done && echo 'MLX inference ready.'"
             : ""
         let waitForInterposer = usesInterposer
             ? "echo 'Waiting for interposer on port \(interposerPort)...' && _t=0 && until curl -fsS \(shellQuote("http://localhost:\(interposerPort)/health")) >/dev/null 2>&1; do sleep 1; _t=$((_t+1)); if [ $_t -ge 60 ]; then echo 'ERROR: Interposer failed to start after 60s'; exit 1; fi; done"
@@ -617,11 +660,18 @@ class AppState: ObservableObject {
     }
 
     private func runnerCommand(model: MLXModel, runner: Runner, userArgs: [String]) -> (environment: [String: String], arguments: [String]) {
-        let modelName = model.source == .local ? model.id : model.id
+        let modelName = model.id
         let modelId = model.source == .local ? (serverStatus.modelName ?? modelName) : modelName
-        let usesInterposer = shouldUseInterposer(runner: runner, model: model)
-        let nativeCloudAuth = model.isCloud && cloudAuthMode == .cliSubscription
-        let openAIBaseURL = usesInterposer ? "http://127.0.0.1:\(interposerPort)/v1" : "http://127.0.0.1:\(serverStatus.port)/v1"
+        // ALL traffic routes through the interposer (the governance engine).
+        // The interposer decides whether to forward to cloud or local backends.
+        let interposerBase = "http://127.0.0.1:\(interposerPort)"
+
+        // For local models, runners need a dummy API key so they don't refuse to start.
+        // For cloud models with API keys, the real key is passed through — the
+        // interposer reads it from the MLX Launcher process environment for outbound calls.
+        // For CLI subscription, the runner sends its own OAuth token to the interposer;
+        // the interposer forwards the incoming auth header to the cloud backend.
+        let dummyKey = "mlx-interposer"
 
         switch runner.id {
         case "claude":
@@ -636,63 +686,67 @@ class AppState: ObservableObject {
                governanceConfig.isFeatureEnabled(.subAgentLaunchControl) || governanceConfig.isFeatureEnabled(.workflowTaskDAG) {
                 args += ["--append-system-prompt", governanceRunnerInstruction()]
             }
-            // CLI subscription: let Claude use its native OAuth auth (Max/Pro plan)
-            let claudeEnv: [String: String] = nativeCloudAuth ? [:] : [
-                "ANTHROPIC_BASE_URL": "http://localhost:\(interposerPort)",
-                "ANTHROPIC_API_KEY": "mlx-local",
+            // Always route through interposer — it handles cloud vs local routing
+            let claudeEnv: [String: String] = [
+                "ANTHROPIC_BASE_URL": interposerBase,
+                "ANTHROPIC_API_KEY": model.isCloud
+                    ? (ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? dummyKey)
+                    : dummyKey,
             ]
             return (claudeEnv, ["claude"] + args)
         case "codex":
-            let codexEnv: [String: String] = nativeCloudAuth ? [:] : [
-                "OPENAI_BASE_URL": "http://127.0.0.1:\(interposerPort)/v1",
-                "OPENAI_API_KEY": "mlx-local",
+            let codexEnv: [String: String] = [
+                "OPENAI_BASE_URL": "\(interposerBase)/v1",
+                "OPENAI_API_KEY": model.isCloud
+                    ? (ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? dummyKey)
+                    : dummyKey,
             ]
-            let codexArgs = nativeCloudAuth
-                ? defaultModelArgs(userArgs, flag: "-m", model: modelId) + userArgs
-                : defaultCodexArgs(userArgs, model: modelId) + userArgs
-            // Interactive launch: no "exec" subcommand (exec requires a prompt argument).
-            // Sub-agent launches use "exec" — that's handled in the governance sub-agent instructions.
+            let codexArgs = model.source == .local
+                ? defaultCodexArgs(userArgs, model: modelId) + userArgs
+                : defaultModelArgs(userArgs, flag: "-m", model: modelId) + userArgs
             return (codexEnv, ["codex"] + codexArgs)
         case "gemini":
-            // For local models: use "gemini-2.0-flash" as model name so Gemini CLI accepts it.
-            // The interposer wildcard route sends everything to local MLX regardless.
-            // Set GOOGLE_GEMINI_BASE_URL to interposer so all API calls go through us.
-            // Also set HTTPS_PROXY to intercept model validation calls.
-            let geminiModel = model.source == .local ? "gemini-2.0-flash" : modelName
-            let geminiArgs = defaultGeminiArgs(userArgs, model: geminiModel) + userArgs
-            var geminiEnv: [String: String] = nativeCloudAuth ? [:] : [
-                "GOOGLE_GEMINI_BASE_URL": "http://127.0.0.1:\(interposerPort)",
-                "GEMINI_API_KEY": "mlx-local",
-                "GOOGLE_API_KEY": "mlx-local",
+            // For local models use a valid Gemini model name so the CLI passes
+            // client-side validation against the interposer's /v1beta/models list.
+            let geminiModel = model.source == .local ? "gemini-2.5-flash" : modelName
+            let geminiEnv: [String: String] = [
+                "GOOGLE_GEMINI_BASE_URL": interposerBase,
+                "GEMINI_API_KEY": model.isCloud
+                    ? (ProcessInfo.processInfo.environment["GEMINI_API_KEY"]
+                       ?? ProcessInfo.processInfo.environment["GOOGLE_API_KEY"] ?? dummyKey)
+                    : dummyKey,
+                "GOOGLE_API_KEY": model.isCloud
+                    ? (ProcessInfo.processInfo.environment["GOOGLE_API_KEY"] ?? dummyKey)
+                    : dummyKey,
+                "NODE_TLS_REJECT_UNAUTHORIZED": "0",
             ]
-            // Route ALL Gemini traffic through interposer (captures model validation too)
-            if model.source == .local {
-                geminiEnv["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
-            }
+            let geminiArgs = defaultGeminiArgs(userArgs, model: geminiModel) + userArgs
             return (geminiEnv, ["gemini"] + geminiArgs)
         case "aider":
-            var aiderEnv: [String: String] = [:]
-            if !nativeCloudAuth {
-                // Use OPENAI_API_BASE (legacy v0 env var that Aider expects)
-                aiderEnv["OPENAI_API_BASE"] = openAIBaseURL
-                aiderEnv["OPENAI_API_KEY"] = "mlx-local"
-                // Also set Anthropic base so Aider can route anthropic-prefixed models
-                aiderEnv["ANTHROPIC_BASE_URL"] = "http://localhost:\(interposerPort)"
-                aiderEnv["ANTHROPIC_API_KEY"] = "mlx-local"
-            }
+            let aiderEnv: [String: String] = [
+                "OPENAI_API_BASE": "\(interposerBase)/v1",
+                "OPENAI_API_KEY": model.isCloud
+                    ? (ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? dummyKey)
+                    : dummyKey,
+                "ANTHROPIC_BASE_URL": interposerBase,
+                "ANTHROPIC_API_KEY": model.isCloud
+                    ? (ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? dummyKey)
+                    : dummyKey,
+            ]
             var aiderArgs = ["aider", "--yes-always", "--no-auto-commits"]
             if !hasFlag(userArgs, "--model") {
-                aiderArgs += ["--model", "openai/\(modelId)"]
+                let prefix = model.source == .local ? "openai/" : ""
+                aiderArgs += ["--model", "\(prefix)\(modelId)"]
             }
             aiderArgs += userArgs
             return (aiderEnv, aiderArgs)
         case "gptme":
-            var gptmeEnv: [String: String] = [:]
-            if !nativeCloudAuth {
-                // Use OPENAI_API_BASE (what gptme expects)
-                gptmeEnv["OPENAI_API_BASE"] = openAIBaseURL
-                gptmeEnv["OPENAI_API_KEY"] = "mlx-local"
-            }
+            let gptmeEnv: [String: String] = [
+                "OPENAI_API_BASE": "\(interposerBase)/v1",
+                "OPENAI_API_KEY": model.isCloud
+                    ? (ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? dummyKey)
+                    : dummyKey,
+            ]
             let gptmeArgs = ["gptme", "--non-interactive"] + defaultModelArgs(userArgs, flag: "--model", model: modelName) + userArgs
             return (gptmeEnv, gptmeArgs)
         default:
@@ -701,12 +755,10 @@ class AppState: ObservableObject {
     }
 
     private func shouldUseInterposer(runner: Runner, model: MLXModel) -> Bool {
-        // CLI subscription mode: skip interposer for cloud models, let the runner
-        // use its native OAuth/session auth (Claude Max, Codex sub, Gemini CLI, etc.)
-        if model.isCloud && cloudAuthMode == .cliSubscription {
-            return false
-        }
-        return runner.needsProxy || model.source != .local
+        // The interposer is the governance engine — ALL traffic flows through it.
+        // Cloud models route through the interposer to their native cloud APIs.
+        // Local models route through the interposer to the local MLX backend.
+        return true
     }
 
     // MARK: - Persistence

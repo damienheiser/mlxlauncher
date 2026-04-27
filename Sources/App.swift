@@ -1,9 +1,9 @@
 import SwiftUI
 
 @main
-struct MLXLauncherApp: App {
+struct EngraveApp: App {
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("Engrave") {
             ContentView()
         }
         .windowResizability(.contentMinSize)

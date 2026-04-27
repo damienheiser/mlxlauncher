@@ -54,6 +54,54 @@ extension Font {
     static let thIcon = Font.system(size: max(13, NSFont.systemFontSize))
 }
 
+// MARK: - Breakout Window Support
+
+/// Opens any SwiftUI view in a standalone NSWindow.
+/// Per the Engrave prompt novel: "Any panel can become its own window."
+class BreakoutWindowManager {
+    static let shared = BreakoutWindowManager()
+    private var windows: [String: NSWindow] = [:]
+
+    func open<V: View>(_ id: String, title: String, size: NSSize = NSSize(width: 480, height: 600), @ViewBuilder content: @escaping () -> V) {
+        if let existing = windows[id], existing.isVisible {
+            existing.makeKeyAndOrderFront(nil)
+            return
+        }
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered, defer: false
+        )
+        window.title = title
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView:
+            content()
+                .frame(minWidth: 360, minHeight: 400)
+                .background(Theme.bg)
+                .foregroundStyle(Theme.cream)
+        )
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        windows[id] = window
+    }
+}
+
+/// Button that opens a panel in its own window.
+struct BreakoutButton<Content: View>: View {
+    let id: String
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        Button { BreakoutWindowManager.shared.open(id, title: title, content: content) } label: {
+            Image(systemName: "rectangle.portrait.and.arrow.right")
+                .font(.system(size: 11)).foregroundStyle(Theme.creamDim)
+        }
+        .buttonStyle(.borderless)
+        .help("Open in separate window")
+    }
+}
+
 // MARK: - Main 3-Column Layout
 
 struct ContentView: View {
@@ -67,8 +115,7 @@ struct ContentView: View {
         case parameters = "Parameters"
         case prompts = "Prompts"
         case runner = "Runner Args"
-        case server = "Server"
-        case interposer = "Interposer"
+        case services = "Services"
         case modelStore = "Model Store"
         case governance = "Governance"
         var id: String { rawValue }
@@ -77,8 +124,7 @@ struct ContentView: View {
             case .parameters: return "slider.horizontal.3"
             case .prompts: return "doc.text"
             case .runner: return "terminal"
-            case .server: return "server.rack"
-            case .interposer: return "arrow.triangle.swap"
+            case .services: return "server.rack"
             case .modelStore: return "square.and.arrow.down"
             case .governance: return "shield.checkered"
             }
@@ -116,9 +162,10 @@ struct ContentView: View {
         VStack(spacing: 0) {
             // Logo
             HStack(spacing: 8) {
-                Text("🐱").font(.system(size: 22))
+                Image(systemName: "shield.checkered").font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(Theme.accent)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("MLX Launcher").font(.system(size: 14, weight: .semibold))
+                    Text("Engrave").font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Theme.creamBold)
                     serverBadge
                 }
@@ -131,20 +178,29 @@ struct ContentView: View {
             // Right panel selector
             VStack(spacing: 1) {
                 ForEach(RightPanel.allCases) { panel in
-                    Button { rightPanel = panel } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: panel.icon).font(.system(size: 13)).frame(width: 18)
-                                .foregroundStyle(rightPanel == panel ? Theme.creamBold : Theme.creamDim)
-                            Text(panel.rawValue).font(.system(size: 13))
-                                .foregroundStyle(rightPanel == panel ? Theme.creamBold : Theme.cream)
-                            Spacer()
+                    HStack(spacing: 0) {
+                        Button { rightPanel = panel } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: panel.icon).font(.system(size: 13)).frame(width: 18)
+                                    .foregroundStyle(rightPanel == panel ? Theme.creamBold : Theme.creamDim)
+                                Text(panel.rawValue).font(.system(size: 13))
+                                    .foregroundStyle(rightPanel == panel ? Theme.creamBold : Theme.cream)
+                                Spacer()
+                            }
                         }
-                        .padding(.horizontal, 10).padding(.vertical, 7)
-                        .background(rightPanel == panel ? Theme.accentMagenta.opacity(0.35) : .clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        // Breakout button — open this panel in its own window
+                        Button { openPanelBreakout(panel) } label: {
+                            Image(systemName: "rectangle.portrait.and.arrow.right")
+                                .font(.system(size: 10)).foregroundStyle(Theme.muted)
+                        }
+                        .buttonStyle(.plain).padding(.trailing, 4)
+                        .help("Open in separate window")
                     }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .background(rightPanel == panel ? Theme.accentMagenta.opacity(0.35) : .clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .contentShape(Rectangle())
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 10)
@@ -212,15 +268,14 @@ struct ContentView: View {
                 .disabled(state.selectedModel == nil || !state.selectedRunner.isInstalled)
                 .keyboardShortcut(.return, modifiers: .command)
                 .alert("Model Change", isPresented: $showModelChangeWarning) {
-                    Button("Relaunch MLX Server") {
+                    Button("Relaunch Inference") {
                         state.relaunchServerWithSelectedModel()
-                        // Delay launch to let server start
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { state.launch() }
                     }
                     Button("Launch Anyway", role: .destructive) { state.launch() }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("The selected model differs from the running MLX server. Relaunching the server will require any existing runners to be restarted to use the updated model.")
+                    Text("The selected model differs from the running inference server. Relaunching will require existing runners to restart.")
                 }
             }
             .padding(12)
@@ -239,6 +294,21 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Breakout
+
+    private func openPanelBreakout(_ panel: RightPanel) {
+        BreakoutWindowManager.shared.open(panel.rawValue, title: "Engrave — \(panel.rawValue)") { [state] in
+            switch panel {
+            case .parameters: ParametersPanel(state: state)
+            case .prompts: PromptsPanel(state: state)
+            case .runner: RunnerArgsPanel(state: state)
+            case .services: ServicesPanel(state: state)
+            case .modelStore: ModelStorePanel(state: state)
+            case .governance: GovernancePanel(state: state)
+            }
+        }
+    }
+
     // MARK: - Col 2: Model List (always visible)
 
     private var modelColumn: some View {
@@ -253,8 +323,7 @@ struct ContentView: View {
         case .parameters: ParametersPanel(state: state)
         case .prompts: PromptsPanel(state: state)
         case .runner: RunnerArgsPanel(state: state)
-        case .server: ServerPanel(state: state)
-        case .interposer: InterposerPanel(state: state)
+        case .services: ServicesPanel(state: state)
         case .modelStore: ModelStorePanel(state: state)
         case .governance: GovernancePanel(state: state)
         }
@@ -814,16 +883,79 @@ struct RunnerArg: Identifiable {
 
 // MARK: - Server Panel
 
-struct ServerPanel: View {
+// MARK: - Unified Services Panel (Phase 2: Server + Interposer merged)
+
+struct ServicesPanel: View {
     @ObservedObject var state: AppState
+    @State private var tab: ServiceTab = .inference
+
+    enum ServiceTab: String, CaseIterable { case inference = "Inference", interposer = "Interposer" }
+
     var body: some View {
         VStack(spacing: 0) {
+            // Header with service health indicators
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("MLX Server").font(.system(size: 14, weight: .semibold))
-                    Text("localhost:\(state.serverStatus.port)")
-                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.creamDim)
+                    Text("Services").font(.thHeader).foregroundStyle(Theme.creamBold)
+                    HStack(spacing: 8) {
+                        serviceIndicator("MLX", running: state.serverStatus.state == .running)
+                        serviceIndicator("Interposer", running: state.interposerRunning)
+                    }
                 }
+                Spacer()
+                // One-click start/stop all
+                HStack(spacing: 4) {
+                    Button {
+                        if let m = state.selectedModel, m.source == .local { state.startServer(model: m) }
+                        state.startInterposer()
+                    } label: { Label("Start All", systemImage: "play.fill") }
+                    .disabled(state.serverStatus.state == .running && state.interposerRunning)
+                    Button {
+                        state.stopServer()
+                        state.stopInterposer()
+                    } label: { Label("Stop All", systemImage: "stop.fill") }
+                    .tint(.red)
+                }.buttonStyle(.bordered).controlSize(.mini)
+            }.padding(12)
+
+            // Tab bar
+            HStack(spacing: 0) {
+                ForEach(ServiceTab.allCases, id: \.self) { t in
+                    Button { tab = t } label: {
+                        Text(t.rawValue).font(.thLabel)
+                            .foregroundStyle(tab == t ? Theme.creamBold : Theme.creamDim)
+                            .padding(.horizontal, 14).padding(.vertical, 6)
+                            .background(tab == t ? Theme.accentMagenta.opacity(0.3) : .clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }.buttonStyle(.plain)
+                }
+                Spacer()
+            }.padding(.horizontal, 12).padding(.vertical, 4)
+
+            Divider()
+
+            // Tab content
+            switch tab {
+            case .inference: inferenceTab
+            case .interposer: interposerTab
+            }
+        }
+    }
+
+    // MARK: - Inference Tab
+
+    private var inferenceTab: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                SC(t: "State", v: state.serverStatus.state.rawValue.capitalized,
+                   c: state.serverStatus.state == .running ? .green : .secondary)
+                SC(t: "Model", v: state.serverStatus.modelName ?? "--", c: .teal)
+                SC(t: "Port", v: String(state.serverStatus.port), c: .secondary)
+            }.padding(.horizontal, 12).padding(.vertical, 8)
+
+            Divider()
+
+            HStack(spacing: 12) {
                 Spacer()
                 HStack(spacing: 4) {
                     Button { if let m = state.selectedModel, m.source == .local { state.startServer(model: m) } } label: {
@@ -834,43 +966,86 @@ struct ServerPanel: View {
                     Button { state.restartServer() } label: { Label("Restart", systemImage: "arrow.clockwise") }
                         .disabled(state.serverStatus.state != .running)
                 }.buttonStyle(.bordered).controlSize(.mini)
-            }.padding(12)
-
-            Divider()
-
-            HStack(spacing: 8) {
-                SC(t: "State", v: state.serverStatus.state.rawValue.capitalized,
-                   c: state.serverStatus.state == .running ? .green : .secondary)
-                SC(t: "Model", v: state.serverStatus.modelName ?? "--", c: .teal)
-                SC(t: "PID", v: state.serverStatus.pid.map(String.init) ?? "--", c: .secondary)
-            }.padding(.horizontal, 12).padding(.vertical, 8)
+            }.padding(.horizontal, 12).padding(.vertical, 6)
 
             Divider()
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Extra MLX Server Args")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Theme.creamDim)
+                Text("Extra Inference Args")
+                    .font(.thSmall).foregroundStyle(Theme.creamDim)
                 TextField("--chat-template-args '{\"enable_thinking\":false}'", text: $state.extraMLXServerArguments)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                Text("Typed sampling parameters are applied on start; use this for any additional mlx_lm server flag.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.creamDim)
-            }
-            .padding(.horizontal, 12).padding(.vertical, 8)
+                    .textFieldStyle(.roundedBorder).font(.thMono)
+                Text("Additional flags passed to the inference engine on start.")
+                    .font(.thSmall).foregroundStyle(Theme.creamDim)
+            }.padding(.horizontal, 12).padding(.vertical, 8)
 
             Divider()
 
-            HStack {
-                Text("Log").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
-                Spacer()
-                Button("Clear") { state.serverLog.removeAll() }
-                    .font(.system(size: 12)).buttonStyle(.borderless)
-            }.padding(.horizontal, 12).padding(.vertical, 6)
-
+            logHeader(lines: $state.serverLog, label: "Inference Log")
             LogViewer(lines: state.serverLog)
         }
+    }
+
+    // MARK: - Interposer Tab
+
+    private var interposerTab: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("port \(state.interposerPort) — Anthropic · OpenAI · Gemini")
+                        .font(.thMono).foregroundStyle(Theme.creamDim)
+                    Text(state.interposerTarget)
+                        .font(.thMono)
+                        .foregroundStyle(state.interposerRunning ? .green : .secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                HStack(spacing: 4) {
+                    Button { state.startInterposer() } label: { Label("Start", systemImage: "play.fill") }
+                        .disabled(state.interposerRunning)
+                    Button { state.stopInterposer() } label: { Label("Stop", systemImage: "stop.fill") }
+                        .tint(.red).disabled(!state.interposerRunning)
+                }.buttonStyle(.bordered).controlSize(.mini)
+            }.padding(12)
+
+            Divider()
+
+            logHeader(lines: $state.interposerLog, label: "Traffic Log")
+
+            if state.interposerLog.isEmpty {
+                VStack(spacing: 6) {
+                    Spacer()
+                    Image(systemName: "arrow.triangle.swap").font(.system(size: 24)).foregroundStyle(Theme.creamDim)
+                    Text(state.interposerRunning ? "Waiting for traffic..." : "Start interposer to see logs")
+                        .font(.thBody).foregroundStyle(Theme.creamDim)
+                    Spacer()
+                }.frame(maxWidth: .infinity)
+            } else {
+                LogViewer(lines: state.interposerLog)
+            }
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func serviceIndicator(_ name: String, running: Bool) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(running ? .green : .secondary.opacity(0.3)).frame(width: 5, height: 5)
+            Text(name).font(.thSmall).foregroundStyle(Theme.creamDim)
+        }
+    }
+
+    private func logHeader(lines: Binding<[String]>, label: String) -> some View {
+        HStack {
+            Text(label).font(.thSmall).foregroundStyle(Theme.creamDim)
+            Spacer()
+            Button("Copy All") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(lines.wrappedValue.joined(separator: "\n"), forType: .string)
+            }.font(.thSmall).buttonStyle(.borderless)
+            Button("Clear") { lines.wrappedValue.removeAll() }
+                .font(.thSmall).buttonStyle(.borderless)
+        }.padding(.horizontal, 12).padding(.vertical, 6)
     }
 }
 
@@ -1693,59 +1868,7 @@ struct FlowLayout: Layout {
 
 // MARK: - Interposer Panel
 
-struct InterposerPanel: View {
-    @ObservedObject var state: AppState
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Engrave Interposer").font(.system(size: 14, weight: .semibold))
-                    Text("port \(state.interposerPort) — Anthropic · OpenAI · Gemini")
-                        .font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.creamDim)
-                    Text(state.interposerTarget)
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundStyle(state.interposerRunning ? .green : .secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                HStack(spacing: 4) {
-                    Circle().fill(state.interposerRunning ? .green : .secondary.opacity(0.3))
-                        .frame(width: 6, height: 6)
-                    Text(state.interposerRunning ? "Running" : "Stopped")
-                        .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
-                }
-                HStack(spacing: 4) {
-                    Button { state.startInterposer() } label: { Label("Start", systemImage: "play.fill") }
-                        .disabled(state.interposerRunning)
-                    Button { state.stopInterposer() } label: { Label("Stop", systemImage: "stop.fill") }
-                        .tint(.red).disabled(!state.interposerRunning)
-                }.buttonStyle(.bordered).controlSize(.mini)
-            }.padding(12)
-
-            Divider()
-
-            HStack {
-                Text("Traffic Log").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
-                Spacer()
-                Button("Clear") {
-                    state.interposerLog.removeAll()
-                }.font(.system(size: 12)).buttonStyle(.borderless)
-            }.padding(.horizontal, 12).padding(.vertical, 6)
-
-            if state.interposerLog.isEmpty {
-                VStack(spacing: 6) {
-                    Spacer()
-                    Image(systemName: "arrow.triangle.swap").font(.system(size: 24)).foregroundStyle(Theme.creamDim)
-                    Text(state.interposerRunning ? "Waiting for traffic..." : "Start interposer to see logs")
-                        .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
-                    Spacer()
-                }.frame(maxWidth: .infinity)
-            } else {
-                LogViewer(lines: state.interposerLog)
-            }
-        }
-    }
-}
+// InterposerPanel removed — merged into ServicesPanel
 
 // MARK: - Log Viewer
 

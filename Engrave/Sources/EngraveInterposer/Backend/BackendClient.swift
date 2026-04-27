@@ -69,11 +69,14 @@ public actor BackendClient {
         return (stream, httpResponse)
     }
 
-    /// Build the full URL and headers for a backend request
+    /// Build the full URL and headers for a backend request.
+    /// `clientAuthHeaders` are forwarded from the incoming request so that
+    /// CLI subscription OAuth tokens and user-supplied API keys pass through.
     public func prepareBackendRequest(
         route: ResolvedRoute,
         canonicalRequest: CanonicalRequest,
-        config: EngraveConfig
+        config: EngraveConfig,
+        clientAuthHeaders: [String: String] = [:]
     ) -> (url: URL, headers: [String: String], body: Data)? {
         let providerConfig = route.providerConfig ?? config.providers[route.provider]
 
@@ -151,6 +154,15 @@ public actor BackendClient {
             endpointURL = url
             requestBody = MessageTranslator.canonicalToChatCompletionsBody(modifiedRequest)
             if let key = apiKey { headers["authorization"] = "Bearer \(key)" }
+        }
+
+        // Merge client auth headers: client-supplied tokens pass through when the
+        // interposer has no server-side key configured (CLI subscription mode).
+        // If the interposer resolved its own key, that takes precedence.
+        for (key, value) in clientAuthHeaders {
+            if headers[key] == nil {
+                headers[key] = value
+            }
         }
 
         guard let bodyData = JSON.serialize(requestBody) else { return nil }

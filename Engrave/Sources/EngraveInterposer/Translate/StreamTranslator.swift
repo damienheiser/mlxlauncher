@@ -20,6 +20,7 @@ public class StreamTranslator {
 
     /// Validate a state transition. Logs a warning if the current state is unexpected.
     /// Returns true if the state is valid.
+    @discardableResult
     private func expectState(_ expected: [StreamState], for event: String) -> Bool {
         if expected.contains(state) { return true }
         #if DEBUG

@@ -45,27 +45,29 @@ class WebServer {
         }
     }
 
+    // MARK: - Request Handling
+
     private func handleClient(_ fd: Int32) {
-        guard let requestData = readRequest(from: fd),
-              let raw = String(data: requestData, encoding: .utf8) else {
+        guard let (headerStr, bodyData) = readAndSplitRequest(from: fd) else {
             sendRawResponse(fd: fd, status: 400, contentType: "application/json", body: #"{"error":"invalid request"}"#)
             return
         }
-        let (method, path) = parseRequestLine(raw)
-        let body = extractBody(raw)
+        let (method, path) = parseRequestLine(headerStr)
 
-        // OpenAI-compatible routes handle their own response writing (for streaming)
         if path.hasPrefix("/v1/") {
-            handleOpenAI(fd: fd, method: method, path: path, body: body)
+            handleOpenAI(fd: fd, method: method, path: path, bodyData: bodyData)
             return
         }
+
+        // Non-OpenAI routes use string body
+        let body = String(data: bodyData, encoding: .utf8) ?? ""
 
         if path == "/health" {
             sendRawResponse(fd: fd, status: 200, contentType: "application/json", body: #"{"status":"ok"}"#)
             return
         }
 
-        let response: (Int, String, String) // (status, contentType, body)
+        let response: (Int, String, String)
 
         if path == "/" || path == "/index.html" {
             response = (200, "text/html", WebUI.html)
@@ -78,9 +80,11 @@ class WebServer {
         sendRawResponse(fd: fd, status: response.0, contentType: response.1, body: response.2)
     }
 
-    private func readRequest(from fd: Int32) -> Data? {
+    /// Read full HTTP request and split into header string + body Data.
+    /// Works directly with Data to avoid lossy String round-trips on large bodies.
+    private func readAndSplitRequest(from fd: Int32) -> (header: String, body: Data)? {
         var data = Data()
-        var buffer = [UInt8](repeating: 0, count: 16_384)
+        var buffer = [UInt8](repeating: 0, count: 65_536) // 64KB read buffer
         var expectedTotal: Int?
 
         while data.count < maxRequestBytes {
@@ -92,14 +96,24 @@ class WebServer {
                 expectedTotal = requestExpectedTotalBytes(data)
             }
             if let expectedTotal, data.count >= expectedTotal {
-                return data
+                break
             }
             if expectedTotal == nil, requestHeaderEndIndex(data) != nil {
-                return data
+                break
             }
         }
 
-        return data.isEmpty || data.count > maxRequestBytes ? nil : data
+        guard !data.isEmpty, data.count <= maxRequestBytes else { return nil }
+
+        // Split at \r\n\r\n boundary
+        let separator = Data([13, 10, 13, 10])
+        guard let sepRange = data.range(of: separator) else { return nil }
+
+        let headerData = data.prefix(upTo: sepRange.lowerBound)
+        let bodyData = data.suffix(from: sepRange.upperBound)
+        guard let headerStr = String(data: headerData, encoding: .utf8) else { return nil }
+
+        return (headerStr, Data(bodyData))
     }
 
     private func requestExpectedTotalBytes(_ data: Data) -> Int? {
@@ -128,7 +142,7 @@ class WebServer {
 
     private func sendRawResponse(fd: Int32, status: Int, contentType: String, body: String) {
         let statusText = statusText(for: status)
-        let headers = "HTTP/1.1 \(status) \(statusText)\r\nContent-Type: \(contentType); charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n"
+        let headers = "HTTP/1.1 \(status) \(statusText)\r\nContent-Type: \(contentType); charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, x-api-key, anthropic-version\r\nConnection: close\r\n\r\n"
         let httpResponse = headers + body
 
         let data = Array(httpResponse.utf8)
@@ -147,16 +161,11 @@ class WebServer {
         }
     }
 
-    private func parseRequestLine(_ raw: String) -> (String, String) {
-        let firstLine = raw.components(separatedBy: "\r\n").first ?? ""
+    private func parseRequestLine(_ header: String) -> (String, String) {
+        let firstLine = header.components(separatedBy: "\r\n").first ?? ""
         let parts = firstLine.split(separator: " ")
         guard parts.count >= 2 else { return ("GET", "/") }
         return (String(parts[0]), String(parts[1]))
-    }
-
-    private func extractBody(_ raw: String) -> String {
-        guard let range = raw.range(of: "\r\n\r\n") else { return "" }
-        return String(raw[range.upperBound...])
     }
 
     // MARK: - API Router
@@ -190,7 +199,7 @@ class WebServer {
         case ("POST", "/api/launch"):
             return launchAPI(body: body)
         default:
-            return (404, ct, #"{"error":"unknown endpoint"}"#)
+            return (404, ct, #"{"error":"unknown API path"}"#)
         }
     }
 
@@ -321,7 +330,7 @@ class WebServer {
 
     // MARK: - OpenAI-Compatible Routes
 
-    private func handleOpenAI(fd: Int32, method: String, path: String, body: String) {
+    private func handleOpenAI(fd: Int32, method: String, path: String, bodyData: Data) {
         let ct = "application/json"
 
         if method == "OPTIONS" {
@@ -338,10 +347,16 @@ class WebServer {
             sendRawResponse(fd: fd, status: 200, contentType: ct, body: jsonEncode(result))
 
         case ("POST", "/v1/chat/completions"):
-            guard let data = body.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            // Parse JSON directly from Data — no String round-trip
+            guard let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
+                print("[webserver] /v1/chat/completions: invalid JSON body (\(bodyData.count) bytes)")
                 sendRawResponse(fd: fd, status: 400, contentType: ct, body: #"{"error":"invalid JSON body"}"#)
                 return
+            }
+
+            if let msgs = json["messages"] as? [[String: Any]] {
+                let roles = msgs.compactMap { $0["role"] as? String }
+                print("[webserver] /v1/chat/completions: \(msgs.count) messages, roles: \(roles), stream: \(json["stream"] ?? "nil"), body: \(bodyData.count) bytes")
             }
 
             let wantStream = json["stream"] as? Bool ?? false
@@ -358,15 +373,12 @@ class WebServer {
     }
 
     private func handleStreamingCompletion(fd: Int32, body: [String: Any]) {
-        // Send SSE headers immediately
-        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n\r\n"
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, x-api-key, anthropic-version\r\n\r\n"
         sendRawBytes(fd: fd, string: headers)
 
         let sem = DispatchSemaphore(value: 0)
         var streamError: Error?
 
-        // Get the stream on the main actor, then iterate it
-        // MLXInference is @MainActor so we need to hop to main to call methods
         var stream: AsyncThrowingStream<String, Error>?
         DispatchQueue.main.sync {
             stream = self.appState.inference.handleChatCompletionsRequest(body)
