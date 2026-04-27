@@ -6,3 +6,5 @@ venv/
 .DS_Store
 bin/
 private/
+*.bundle
+refs/original/
