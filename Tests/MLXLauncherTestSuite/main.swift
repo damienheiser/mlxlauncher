@@ -71,7 +71,7 @@ tests.append(("REST API exposes required launcher endpoints", {
         try expect(webServer.contains(endpoint), "Missing endpoint \(endpoint)")
     }
     try expect(webServer.contains("model or runner not found"), "Launch API must return an error for missing models/runners")
-    try expect(webServer.contains("readRequest(from fd"), "WebServer must use a Content-Length aware request reader")
+    try expect(webServer.contains("readAndSplitRequest(from"), "WebServer must use a Content-Length aware request reader")
     try expect(webServer.contains("requestExpectedTotalBytes"), "WebServer must read split POST bodies by Content-Length")
 }))
 

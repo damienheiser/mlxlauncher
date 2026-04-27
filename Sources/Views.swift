@@ -118,6 +118,10 @@ struct ContentView: View {
         case services = "Services"
         case modelStore = "Model Store"
         case governance = "Governance"
+        case uiaChat = "UIA Chat"
+        case hitl = "HITL"
+        case dashboard = "Dashboard"
+        case settings = "Settings"
         var id: String { rawValue }
         var icon: String {
             switch self {
@@ -127,6 +131,10 @@ struct ContentView: View {
             case .services: return "server.rack"
             case .modelStore: return "square.and.arrow.down"
             case .governance: return "shield.checkered"
+            case .uiaChat: return "bubble.left.and.text.bubble.right"
+            case .hitl: return "hand.raised"
+            case .dashboard: return "rectangle.3.group"
+            case .settings: return "gearshape"
             }
         }
     }
@@ -305,6 +313,10 @@ struct ContentView: View {
             case .services: ServicesPanel(state: state)
             case .modelStore: ModelStorePanel(state: state)
             case .governance: GovernancePanel(state: state)
+            case .uiaChat: UIAChatPanel(state: state)
+            case .hitl: HITLPanel(state: state)
+            case .dashboard: DashboardPanel(state: state)
+            case .settings: SettingsPanel(state: state)
             }
         }
     }
@@ -326,6 +338,10 @@ struct ContentView: View {
         case .services: ServicesPanel(state: state)
         case .modelStore: ModelStorePanel(state: state)
         case .governance: GovernancePanel(state: state)
+        case .uiaChat: UIAChatPanel(state: state)
+        case .hitl: HITLPanel(state: state)
+        case .dashboard: DashboardPanel(state: state)
+        case .settings: SettingsPanel(state: state)
         }
     }
 }

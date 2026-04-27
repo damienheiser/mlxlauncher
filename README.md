@@ -1,8 +1,8 @@
-# MLX Launcher
+# MLX Launcher (Engrave)
 
 A native macOS application for running large language models locally on Apple Silicon and connecting them to AI coding assistants.
 
-MLX Launcher handles the entire workflow: discovering models on disk, managing the MLX inference server, translating between AI provider APIs, and launching coding tools -- all from a single interface.
+MLX Launcher handles the entire workflow: discovering models on disk, running native Swift MLX inference, translating between AI provider APIs, and launching coding tools -- all from a single interface. The app binary and bundle are branded as **Engrave** while the repository retains the `mlxLauncher` name.
 
 ## Features
 
@@ -14,7 +14,7 @@ MLX Launcher handles the entire workflow: discovering models on disk, managing t
 - **Model metadata** -- displays architecture, quantization level, file size for each model
 
 ### Server Control
-- **MLX inference server** -- starts/stops `mlx_lm server` with configurable generation parameters
+- **Native MLX inference engine** -- runs models directly via Swift MLX with configurable generation parameters (no external server process required)
 - **Generation profiles** -- save and switch between parameter presets (temperature, top_p, top_k, min_p, max_tokens, repetition penalty)
 - **Server health monitoring** -- polls the server endpoint and displays status in real time
 - **Log tailing** -- live server output in the UI
@@ -37,16 +37,15 @@ MLX Launcher handles the entire workflow: discovering models on disk, managing t
 - **gptme** -- launches with `OPENAI_BASE_URL` pointing to MLX server
 - **Per-runner configuration** -- flags, arguments, working directory, system prompts
 
-### Embedded Web UI
-- **REST API** on port 8421 for programmatic control
-- **Browser-based dashboard** with model grid, runner buttons, server controls
-- **Status polling** every 5 seconds
+### UI
+- **Breakout windows** -- any panel can pop into its own window
+- **Unified Services panel** -- merged Server + Interposer into a tabbed view with health indicators
+- **Embedded Web UI** -- REST API on port 8421 for programmatic control, browser-based dashboard with model grid, runner buttons, server controls
 
 ## Requirements
 
 - macOS 14.0+
 - Apple Silicon Mac (M1/M2/M3/M4)
-- Python 3 with `mlx-lm` installed (`pip3 install mlx-lm`)
 
 ## Build
 
@@ -54,18 +53,54 @@ MLX Launcher handles the entire workflow: discovering models on disk, managing t
 swift build -c release
 ```
 
+The release binary is `.build/arm64-apple-macosx/release/MLXLauncher` (the Package.swift target name). The app bundle renames it to `Engrave`.
+
 ## Install
 
 ```bash
 ./scripts/build_app.sh release
 # Copy to Applications
-cp -R MLXLauncher.app /Applications/
+cp -R Engrave.app /Applications/
 ```
 
 Or run directly:
 
 ```bash
 .build/arm64-apple-macosx/release/MLXLauncher
+```
+
+## Testing
+
+Structural tests (model store, server lifecycle, view state):
+
+```bash
+swift build --target MLXLauncherTestSuite && .build/debug/MLXLauncherTestSuite
+```
+
+Comprehensive test suite (66 tests: unit, integration, system, e2e contracts):
+
+```bash
+swift build --target EngraveTestSuite && .build/debug/EngraveTestSuite
+```
+
+End-to-end tests (requires the app running with a model loaded):
+
+```bash
+./scripts/test_e2e.sh
+```
+
+## Configuration
+
+Config lives at `~/.config/mlx-launcher/`:
+
+```
+~/.config/mlx-launcher/
+  runner-settings.json      Runner flags, arguments, working directories
+  model-store.json          Discovered models and download state
+  profiles/                 Generation parameter presets
+  prompts/                  System prompt templates
+  governance.json           Governance engine settings
+  governance/               Generated policy artifacts
 ```
 
 ## Project Structure
@@ -98,7 +133,7 @@ Engrave/                               API translation proxy + governance engine
 
 ## Governance Artifacts
 
-When governance is enabled, MLX Launcher writes generated policy artifacts to:
+When governance is enabled, Engrave writes generated policy artifacts to:
 
 - `~/.config/mlx-launcher/governance/engrave-governance-brief.md`
 - `~/.config/mlx-launcher/governance/gemini-policy.md`
@@ -113,7 +148,7 @@ MLX Launcher has three layers:
 
 1. **Model Layer** -- discovers MLX models across local directories, HuggingFace, and network servers. Manages generation profiles and system prompts.
 
-2. **Server Layer** -- controls the `mlx_lm` inference server lifecycle. Monitors health, tails logs, manages PIDs.
+2. **Server Layer** -- controls native Swift MLX inference. Monitors health, tails logs, manages GPU cache and generation parameters.
 
 3. **Proxy Layer** -- the Engrave interposer sits between AI runners and the MLX backend. It accepts requests in any supported format (Anthropic, OpenAI, Gemini), translates them through a canonical intermediate representation, forwards to the backend, and translates the streaming response back to the caller's format. This means Claude Code (which speaks Anthropic API) can use a local MLX model (which speaks OpenAI Chat Completions) without any modification.
 

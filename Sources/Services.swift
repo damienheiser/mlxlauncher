@@ -28,6 +28,26 @@ class AppState: ObservableObject {
     @Published var governanceEnabled = false
     @Published var cloudAuthMode: CloudAuthMode = .apiKey
 
+    // Settings (named appSettings to avoid conflict with settings(for:) method)
+    @Published var appSettings = SettingsManager()
+
+    // UIA Chat
+    @Published var uiaChatMessages: [UIAChatMessage] = []
+    @Published var uiaTaskGraph: UIATaskGraph? = nil
+    @Published var uiaIsProcessing = false
+
+    // HITL
+    @Published var hitlInterceptions: [HITLInterception] = []
+    @Published var hitlTimeDelaySeconds: Int = 5
+    @Published var hitlEnabled = false
+
+    // Dashboard
+    @Published var dashboardConfig = DashboardConfig.default
+    @Published var agentActivityFeed: [AgentActivityEvent] = []
+    @Published var fileChangeFeed: [FileChangeEvent] = []
+    @Published var worktreeStatus: [WorktreeEntry] = []
+    @Published var merkleDSGLog: [MerkleDSGEntry] = []
+
     private var logTimer: Timer?
     private var interposer: Engrave?
     private var logStreamTask: Task<Void, Never>?
@@ -1106,5 +1126,50 @@ class AppState: ObservableObject {
         if escaped { current.append("\\") }
         if !current.isEmpty { words.append(current) }
         return words
+    }
+
+    // MARK: - UIA Chat
+
+    func sendUIAMessage(_ text: String) {
+        let userMsg = UIAChatMessage(role: .user, content: text)
+        uiaChatMessages.append(userMsg)
+        uiaIsProcessing = true
+
+        // Placeholder: generate a mock task decomposition after a brief delay
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            let nodes = [
+                UIATaskNode(title: "Analyze requirements", status: .completed, complexity: .simple),
+                UIATaskNode(title: "Design approach", status: .running, complexity: .medium),
+                UIATaskNode(title: "Implement changes", status: .pending, complexity: .complex),
+                UIATaskNode(title: "Write tests", status: .pending, complexity: .medium),
+                UIATaskNode(title: "Review & merge", status: .pending, complexity: .simple),
+            ]
+            let edges = [
+                UIATaskEdge(from: nodes[0].id, to: nodes[1].id),
+                UIATaskEdge(from: nodes[1].id, to: nodes[2].id),
+                UIATaskEdge(from: nodes[2].id, to: nodes[3].id),
+                UIATaskEdge(from: nodes[3].id, to: nodes[4].id),
+            ]
+            let graph = UIATaskGraph(nodes: nodes, edges: edges)
+            self.uiaTaskGraph = graph
+            let graphJSON = (try? JSONEncoder().encode(graph)).flatMap { String(data: $0, encoding: .utf8) }
+            let reply = UIAChatMessage(
+                role: .assistant,
+                content: "I've decomposed your task into 5 steps. Here's the execution plan:",
+                taskGraphJSON: graphJSON
+            )
+            self.uiaChatMessages.append(reply)
+            self.uiaIsProcessing = false
+        }
+    }
+
+    // MARK: - HITL
+
+    func handleHITLDecision(id: UUID, decision: HITLStatus, steerDirective: String? = nil) {
+        guard let idx = hitlInterceptions.firstIndex(where: { $0.id == id }) else { return }
+        hitlInterceptions[idx].status = decision
+        hitlInterceptions[idx].steerDirective = steerDirective
+        HITLNotificationManager.shared.removeNotification(id: id)
     }
 }

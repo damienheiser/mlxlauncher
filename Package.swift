@@ -30,6 +30,10 @@ let package = Package(
         .executableTarget(
             name: "MLXLauncherTestSuite",
             path: "Tests/MLXLauncherTestSuite"
+        ),
+        .executableTarget(
+            name: "EngraveTestSuite",
+            path: "Tests/EngraveTestSuite"
         )
     ]
 )

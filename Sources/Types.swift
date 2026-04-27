@@ -395,3 +395,250 @@ private func fetchDynamicCloudModels() -> [MLXModel] {
 
     return models
 }
+
+// MARK: - UIA Chat Types
+
+struct UIAChatMessage: Identifiable, Codable {
+    let id: UUID
+    let role: ChatRole
+    let content: String
+    let timestamp: Date
+    var taskGraphJSON: String?  // serialized UIATaskGraph for display
+
+    init(role: ChatRole, content: String, taskGraphJSON: String? = nil) {
+        self.id = UUID()
+        self.role = role
+        self.content = content
+        self.timestamp = Date()
+        self.taskGraphJSON = taskGraphJSON
+    }
+}
+
+enum ChatRole: String, Codable {
+    case user, assistant, system
+}
+
+struct UIATaskGraph: Identifiable, Codable {
+    let id: UUID
+    var nodes: [UIATaskNode]
+    var edges: [UIATaskEdge]
+
+    init(nodes: [UIATaskNode] = [], edges: [UIATaskEdge] = []) {
+        self.id = UUID()
+        self.nodes = nodes
+        self.edges = edges
+    }
+}
+
+struct UIATaskEdge: Codable, Identifiable {
+    var id: String { "\(from)->\(to)" }
+    let from: UUID
+    let to: UUID
+}
+
+struct UIATaskNode: Identifiable, Codable {
+    let id: UUID
+    var title: String
+    var status: TaskNodeStatus
+    var complexity: TaskComplexity
+    var assignedModel: String?
+    var tokenBudget: UInt64?
+
+    init(title: String, status: TaskNodeStatus = .pending, complexity: TaskComplexity = .simple, assignedModel: String? = nil, tokenBudget: UInt64? = nil) {
+        self.id = UUID()
+        self.title = title
+        self.status = status
+        self.complexity = complexity
+        self.assignedModel = assignedModel
+        self.tokenBudget = tokenBudget
+    }
+}
+
+enum TaskNodeStatus: String, Codable, CaseIterable {
+    case pending, running, completed, failed
+}
+
+enum TaskComplexity: String, Codable, CaseIterable {
+    case trivial, simple, medium, complex, critical
+
+    var tokenBudget: UInt64 {
+        switch self {
+        case .trivial:  return 5_000
+        case .simple:   return 15_000
+        case .medium:   return 50_000
+        case .complex:  return 100_000
+        case .critical: return 150_000
+        }
+    }
+
+    var timeout: TimeInterval {
+        switch self {
+        case .trivial:  return 30
+        case .simple:   return 120
+        case .medium:   return 300
+        case .complex:  return 600
+        case .critical: return 900
+        }
+    }
+}
+
+// MARK: - HITL Types
+
+struct HITLInterception: Identifiable, Codable {
+    let id: UUID
+    var toolName: String
+    var toolInput: String
+    var severity: String  // "block", "warn", "modify"
+    var reason: String
+    var timestamp: Date
+    var expiresAt: Date
+    var status: HITLStatus
+    var steerDirective: String?
+    var relatedIds: [UUID]
+
+    init(toolName: String, toolInput: String, severity: String, reason: String, timeoutSeconds: Int = 60) {
+        self.id = UUID()
+        self.toolName = toolName
+        self.toolInput = toolInput
+        self.severity = severity
+        self.reason = reason
+        self.timestamp = Date()
+        self.expiresAt = Date().addingTimeInterval(Double(timeoutSeconds))
+        self.status = .pending
+        self.steerDirective = nil
+        self.relatedIds = []
+    }
+
+    var isExpired: Bool { Date() >= expiresAt }
+    var remainingSeconds: Int { max(0, Int(expiresAt.timeIntervalSinceNow)) }
+}
+
+enum HITLStatus: String, Codable, CaseIterable {
+    case pending, allowed, denied, steered, expired
+}
+
+// MARK: - Dashboard Types
+
+struct DashboardConfig: Codable {
+    var panels: [DashboardPanelConfig]
+    var activeLayout: String
+
+    static let `default` = DashboardConfig(
+        panels: [
+            DashboardPanelConfig(type: .agentActivity),
+            DashboardPanelConfig(type: .governanceEvents),
+            DashboardPanelConfig(type: .servicesMonitor),
+        ],
+        activeLayout: "default"
+    )
+}
+
+struct DashboardPanelConfig: Codable, Identifiable {
+    let id: UUID
+    var type: DashboardPanelType
+    var visible: Bool
+
+    init(type: DashboardPanelType, visible: Bool = true) {
+        self.id = UUID()
+        self.type = type
+        self.visible = visible
+    }
+}
+
+enum DashboardPanelType: String, Codable, CaseIterable {
+    case agentActivity = "Agent Activity"
+    case taskDAGViewer = "Task DAG"
+    case governanceEvents = "Governance Events"
+    case diffViewer = "Diff Viewer"
+    case worktreeStatus = "Worktree Status"
+    case fileChangeFeed = "File Changes"
+    case merkleDSGLog = "Provenance Log"
+    case servicesMonitor = "Services Monitor"
+
+    var icon: String {
+        switch self {
+        case .agentActivity:    return "list.bullet.rectangle"
+        case .taskDAGViewer:    return "point.3.connected.trianglepath.dotted"
+        case .governanceEvents: return "shield.checkered"
+        case .diffViewer:       return "doc.on.doc"
+        case .worktreeStatus:   return "arrow.triangle.branch"
+        case .fileChangeFeed:   return "doc.badge.clock"
+        case .merkleDSGLog:     return "link"
+        case .servicesMonitor:  return "server.rack"
+        }
+    }
+}
+
+struct AgentActivityEvent: Identifiable, Codable {
+    let id: UUID
+    var agentId: String
+    var action: String
+    var detail: String
+    var risk: String  // "safe", "warn", "danger"
+    var timestamp: Date
+
+    init(agentId: String, action: String, detail: String, risk: String = "safe") {
+        self.id = UUID()
+        self.agentId = agentId
+        self.action = action
+        self.detail = detail
+        self.risk = risk
+        self.timestamp = Date()
+    }
+}
+
+struct FileChangeEvent: Identifiable, Codable {
+    let id: UUID
+    var path: String
+    var changeType: String  // "add", "modify", "delete"
+    var agentId: String?
+    var timestamp: Date
+
+    init(path: String, changeType: String, agentId: String? = nil) {
+        self.id = UUID()
+        self.path = path
+        self.changeType = changeType
+        self.agentId = agentId
+        self.timestamp = Date()
+    }
+}
+
+struct WorktreeEntry: Identifiable {
+    let id: UUID
+    var path: String
+    var branch: String
+    var agentId: String?
+    var hasChanges: Bool
+
+    init(path: String, branch: String, agentId: String? = nil, hasChanges: Bool = false) {
+        self.id = UUID()
+        self.path = path
+        self.branch = branch
+        self.agentId = agentId
+        self.hasChanges = hasChanges
+    }
+}
+
+struct MerkleDSGEntry: Identifiable, Codable {
+    let id: UUID
+    var sequence: UInt64
+    var eventType: String
+    var actor: String
+    var contentHash: String
+    var parentIds: [UUID]
+    var timestamp: Date
+    var verified: Bool
+
+    init(sequence: UInt64, eventType: String, actor: String, contentHash: String = "", parentIds: [UUID] = []) {
+        self.id = UUID()
+        self.sequence = sequence
+        self.eventType = eventType
+        self.actor = actor
+        self.contentHash = contentHash
+        self.parentIds = parentIds
+        self.timestamp = Date()
+        self.verified = false
+    }
+}
+
+// Settings types are defined in Settings.swift (SettingsManager + AppSettings)
