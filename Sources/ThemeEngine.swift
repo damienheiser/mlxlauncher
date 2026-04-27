@@ -36,7 +36,7 @@ struct ThemeDefinition: Codable, Identifiable, Equatable {
 
     // Built-in Synthaer Dark (matches current Theme enum)
     static let synthaerDark = ThemeDefinition(
-        name: "synthaer-dark",
+        name: "Engrave Dark",
         colors: ThemeColors(
             bg: "#1a1525", bgCard: "#231e30", bgHover: "#2c2540",
             cream: "#f5e6d3", creamBold: "#fff1e0", creamDim: "#a89585",
@@ -50,7 +50,7 @@ struct ThemeDefinition: Codable, Identifiable, Equatable {
 
     // Built-in Synthaer Light
     static let synthaerLight = ThemeDefinition(
-        name: "synthaer-light",
+        name: "Engrave Light",
         colors: ThemeColors(
             bg: "#faf5ef", bgCard: "#f0ebe4", bgHover: "#e6e0d8",
             cream: "#2d2438", creamBold: "#1a1525", creamDim: "#6b6080",

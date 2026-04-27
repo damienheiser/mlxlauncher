@@ -191,6 +191,10 @@ private struct DashboardCardWrapper: View {
             TaskDAGViewerPanel(state: state)
         case .diffViewer:
             DiffViewerPanel()
+        case .activeAgents:
+            ActiveAgentsPanel(state: state)
+        case .ungovernedAgents:
+            UngovernedAgentsPanel(state: state)
         }
     }
 }
@@ -612,7 +616,7 @@ struct MerkleDSGLogPanel: View {
             }
 
             if entries.isEmpty {
-                emptyState("Provenance log is empty.", icon: "link")
+                emptyState("Audit log is empty.", icon: "link")
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 6) {
@@ -860,6 +864,52 @@ struct DiffViewerPanel: View {
                     .frame(minHeight: 120)
             }
         }
+    }
+}
+
+// MARK: - Active Agents Panel
+
+struct ActiveAgentsPanel: View {
+    @ObservedObject var state: AppState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if state.agentActivityFeed.isEmpty {
+                Text("No active agents. Launch a runner to see governed agents here.")
+                    .font(.thSmall).foregroundColor(Theme.muted)
+                    .frame(maxWidth: .infinity, minHeight: 100)
+            } else {
+                let agents = Dictionary(grouping: state.agentActivityFeed, by: \.agentId)
+                ForEach(Array(agents.keys.sorted()), id: \.self) { agentId in
+                    if let latest = agents[agentId]?.last {
+                        HStack(spacing: 8) {
+                            Circle().fill(Theme.green).frame(width: 8, height: 8)
+                            Text(agentId).font(.thBody).foregroundColor(Theme.cream)
+                            Spacer()
+                            Text(latest.action).font(.thSmall).foregroundColor(Theme.creamDim)
+                        }
+                        .padding(6).background(Theme.bgCard).cornerRadius(6)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal)
+    }
+}
+
+// MARK: - Ungoverned Agents Panel
+
+struct UngovernedAgentsPanel: View {
+    @ObservedObject var state: AppState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Agents running outside Engrave governance control.")
+                .font(.thSmall).foregroundColor(Theme.muted)
+            Text("Detection requires process scanning (future feature).")
+                .font(.thSmall).foregroundColor(Theme.yellow)
+                .padding(8).background(Theme.yellow.opacity(0.1)).cornerRadius(6)
+        }
+        .padding(.horizontal)
+        .frame(maxWidth: .infinity, minHeight: 100)
     }
 }
 

@@ -877,8 +877,10 @@ enum DashboardPanelType: String, Codable, CaseIterable {
     case diffViewer = "Diff Viewer"
     case worktreeStatus = "Worktree Status"
     case fileChangeFeed = "File Changes"
-    case merkleDSGLog = "Provenance Log"
+    case merkleDSGLog = "Audit Log"
     case servicesMonitor = "Services Monitor"
+    case activeAgents = "Active Agents"
+    case ungovernedAgents = "Ungoverned Agents"
 
     var icon: String {
         switch self {
@@ -890,6 +892,8 @@ enum DashboardPanelType: String, Codable, CaseIterable {
         case .fileChangeFeed:   return "doc.badge.clock"
         case .merkleDSGLog:     return "link"
         case .servicesMonitor:  return "server.rack"
+        case .activeAgents:     return "person.3"
+        case .ungovernedAgents: return "exclamationmark.triangle"
         }
     }
 }

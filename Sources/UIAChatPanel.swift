@@ -4,7 +4,7 @@ import SwiftUI
 
 /// Chat interface for the UIA orchestrator. Allows users to decompose tasks,
 /// view DAG visualizations inline, and interact with the unified intelligence layer.
-struct UIAChatPanel: View {
+struct EngraveAgentPanel: View {
     @ObservedObject var state: AppState
 
     @State private var inputText = ""
@@ -14,6 +14,27 @@ struct UIAChatPanel: View {
         VStack(spacing: 0) {
             header
             Divider().background(Theme.muted.opacity(0.3))
+
+            // Working directory picker
+            HStack(spacing: 8) {
+                Image(systemName: "folder.fill").foregroundColor(Theme.teal)
+                Text(state.settings(for: state.selectedRunner).workingDirectory)
+                    .font(.thMono).foregroundColor(Theme.cream)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button("Change...") {
+                    let panel = NSOpenPanel()
+                    panel.canChooseDirectories = true
+                    panel.canChooseFiles = false
+                    if panel.runModal() == .OK, let url = panel.url {
+                        var s = state.settings(for: state.selectedRunner)
+                        s.workingDirectory = url.path
+                        state.updateSettings(for: state.selectedRunner, s)
+                    }
+                }
+                .font(.thSmall).foregroundColor(Theme.accentBlue)
+            }
+            .padding(8).background(Theme.bgCard).cornerRadius(6).padding(.horizontal)
 
             if state.uiaChatMessages.isEmpty {
                 emptyState
@@ -37,10 +58,10 @@ struct UIAChatPanel: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("UIA Chat")
+                Text("Engrave Agent")
                     .font(.thHeader)
                     .foregroundStyle(Theme.creamBold)
-                Text("Unified Intelligence Architecture")
+                Text("AI Agent Orchestrator")
                     .font(.thSmall)
                     .foregroundStyle(Theme.creamDim)
             }
@@ -96,7 +117,7 @@ struct UIAChatPanel: View {
                     .font(.system(size: 36))
                     .foregroundStyle(Theme.accent.opacity(0.6))
 
-                Text("UIA Orchestrator")
+                Text("Engrave Agent")
                     .font(.thTitle)
                     .foregroundStyle(Theme.creamBold)
 
@@ -161,7 +182,7 @@ struct UIAChatPanel: View {
 
     private var inputBar: some View {
         HStack(spacing: 10) {
-            TextField("Ask UIA to decompose a task...", text: $inputText)
+            TextField("Ask the agent to decompose a task...", text: $inputText)
                 .textFieldStyle(.plain)
                 .font(.thBody)
                 .foregroundStyle(Theme.cream)
@@ -238,7 +259,7 @@ struct ChatBubbleView: View {
         VStack(alignment: alignment, spacing: 4) {
             // Role label
             if message.role != .system {
-                Text(message.role == .user ? "You" : "UIA")
+                Text(message.role == .user ? "You" : "Agent")
                     .font(.thBadge)
                     .foregroundStyle(Theme.creamDim)
             }
@@ -362,9 +383,9 @@ struct PulsingDotView: View {
 // MARK: - Preview
 
 #if DEBUG
-struct UIAChatPanel_Previews: PreviewProvider {
+struct EngraveAgentPanel_Previews: PreviewProvider {
     static var previews: some View {
-        UIAChatPanel(state: AppState())
+        EngraveAgentPanel(state: AppState())
             .frame(width: 460, height: 600)
     }
 }

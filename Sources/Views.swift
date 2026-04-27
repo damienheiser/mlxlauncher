@@ -102,38 +102,45 @@ struct BreakoutButton<Content: View>: View {
     }
 }
 
+// MARK: - Path Helper
+
+/// Replaces the user's home directory with ~ for compact display.
+private func abbreviatedPath(_ path: String) -> String {
+    path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+}
+
 // MARK: - Main 3-Column Layout
 
 struct ContentView: View {
     @StateObject private var state = AppState()
-    @State private var rightPanel: RightPanel = .parameters
+    @State private var rightPanel: RightPanel = .engraveAgent
     @State private var webServerStarted = false
     @State private var webServer: WebServer?
     @State private var showModelChangeWarning = false
 
     enum RightPanel: String, CaseIterable, Identifiable {
+        case engraveAgent = "Engrave Agent"
         case parameters = "Parameters"
         case prompts = "Prompts"
         case runner = "Runner Args"
         case services = "Services"
         case modelStore = "Model Store"
         case governance = "Governance"
-        case uiaChat = "UIA Chat"
-        case hitl = "HITL"
+        case agentInterception = "Agent Interception"
         case dashboard = "Dashboard"
         case engines = "Engines"
         case settings = "Settings"
         var id: String { rawValue }
         var icon: String {
             switch self {
+            case .engraveAgent: return "sparkle"
             case .parameters: return "slider.horizontal.3"
             case .prompts: return "doc.text"
             case .runner: return "terminal"
             case .services: return "server.rack"
             case .modelStore: return "square.and.arrow.down"
             case .governance: return "shield.checkered"
-            case .uiaChat: return "bubble.left.and.text.bubble.right"
-            case .hitl: return "hand.raised"
+            case .agentInterception: return "hand.raised.circle"
             case .dashboard: return "rectangle.3.group"
             case .engines: return "engine.combustion"
             case .settings: return "gearshape"
@@ -254,6 +261,30 @@ struct ContentView: View {
 
             Divider().padding(.horizontal, 12)
 
+            // Working directory picker
+            HStack(spacing: 4) {
+                Image(systemName: "folder").font(.system(size: 10)).foregroundColor(Theme.muted)
+                Text(abbreviatedPath(state.settings(for: state.selectedRunner).workingDirectory))
+                    .font(.thMonoSmall).foregroundColor(Theme.creamDim)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button(action: {
+                    let panel = NSOpenPanel()
+                    panel.canChooseDirectories = true
+                    panel.canChooseFiles = false
+                    panel.allowsMultipleSelection = false
+                    if panel.runModal() == .OK, let url = panel.url {
+                        var s = state.settings(for: state.selectedRunner)
+                        s.workingDirectory = url.path
+                        state.updateSettings(for: state.selectedRunner, s)
+                    }
+                }) {
+                    Image(systemName: "ellipsis.circle").font(.system(size: 11)).foregroundColor(Theme.accentBlue)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal)
+
             // Selected model + Launch
             VStack(spacing: 8) {
                 if let m = state.selectedModel {
@@ -315,8 +346,8 @@ struct ContentView: View {
             case .services: ServicesPanel(state: state)
             case .modelStore: ModelStorePanel(state: state)
             case .governance: GovernancePanel(state: state)
-            case .uiaChat: UIAChatPanel(state: state)
-            case .hitl: HITLPanel(state: state)
+            case .engraveAgent: EngraveAgentPanel(state: state)
+            case .agentInterception: HITLPanel(state: state)
             case .dashboard: DashboardPanel(state: state)
             case .engines: EngineRegistryPanel(state: state)
             case .settings: SettingsPanel(state: state)
@@ -341,8 +372,8 @@ struct ContentView: View {
         case .services: ServicesPanel(state: state)
         case .modelStore: ModelStorePanel(state: state)
         case .governance: GovernancePanel(state: state)
-        case .uiaChat: UIAChatPanel(state: state)
-        case .hitl: HITLPanel(state: state)
+        case .engraveAgent: EngraveAgentPanel(state: state)
+        case .agentInterception: HITLPanel(state: state)
         case .dashboard: DashboardPanel(state: state)
         case .engines: EngineRegistryPanel(state: state)
         case .settings: SettingsPanel(state: state)
@@ -1424,12 +1455,11 @@ struct GovernancePanel: View {
                 VStack(spacing: 18) {
                     enableSection
                     if state.governanceConfig.enabled {
+                        presetsSection
                         sandboxSection
                         rulesSection
-                        uiaSection
                         contextBudgetSection
                         toolInterceptionSection
-                        presetsSection
                         eventLogSection
                     }
                 }.padding(14)
@@ -1474,6 +1504,10 @@ struct GovernancePanel: View {
 
             Text(sandboxDescription(state.governanceConfig.sandboxLevel))
                 .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
+
+            Text("Sandbox levels control tool permissions within the Engrave governance engine. They do not use macOS system sandboxing or Endpoint Security.")
+                .font(.thSmall).foregroundColor(Theme.muted)
+                .padding(.horizontal)
         }.padding(10).background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -1586,26 +1620,6 @@ struct GovernancePanel: View {
             .clipShape(RoundedRectangle(cornerRadius: 3))
     }
 
-    private var uiaSection: some View {
-        let uia = state.governanceConfig.uiaConfig ?? .default
-        return VStack(alignment: .leading, spacing: 8) {
-            Text("Engrave UIA").font(.system(size: 14, weight: .semibold))
-            Text("User-facing orchestrator for prompt decomposition, workflow DAGs, sub-agent launch steering, and progress reporting.")
-                .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
-            HStack(spacing: 8) {
-                GChip(label: "Orchestrator", value: uia.orchestratorModel)
-                GChip(label: "Cheap", value: uia.cheapModel)
-                GChip(label: "Local", value: uia.localModel)
-            }
-            HStack(spacing: 10) {
-                Label(uia.explainWorkToUser ? "User Updates" : "Silent", systemImage: "bubble.left.and.text.bubble.right")
-                Label(uia.createTaskDAG ? "Task DAG" : "No DAG", systemImage: "point.3.connected.trianglepath.dotted")
-                Label(uia.steerSubAgents ? "Steers Agents" : "No Steering", systemImage: "arrow.triangle.branch")
-            }
-            .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
-        }.padding(10).background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
     private var contextBudgetSection: some View {
         let budgets = state.governanceConfig.contextBudgets ?? ContextBudget.defaults
         return VStack(alignment: .leading, spacing: 8) {
@@ -1614,30 +1628,53 @@ struct GovernancePanel: View {
                 .font(.system(size: 13)).foregroundStyle(Theme.creamDim)
             ForEach(budgets.keys.sorted(), id: \.self) { key in
                 if let budget = budgets[key] {
-                    HStack {
-                        Text(key).font(.system(size: 12, weight: .medium, design: .monospaced))
-                        Spacer()
-                        Text("\(budget.maxTokens.map(String.init) ?? "—") tokens @ \(Int(budget.thresholdPercent * 100))%")
-                            .font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.creamDim)
-                        Text(budget.relayModel).font(.system(size: 13)).foregroundStyle(Theme.creamDim)
-                    }
+                    contextBudgetRow(key: key, budget: budget)
                 }
             }
         }.padding(10).background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    private struct GChip: View {
-        let label: String
-        let value: String
-        var body: some View {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.creamDim)
-                Text(value).font(.system(size: 13, design: .monospaced)).foregroundStyle(.primary)
+    private func contextBudgetRow(key: String, budget: ContextBudget) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(key).font(.system(size: 12, weight: .medium, design: .monospaced))
+            HStack(spacing: 12) {
+                HStack(spacing: 4) {
+                    Text("Threshold").font(.system(size: 11)).foregroundStyle(Theme.creamDim)
+                    Stepper(
+                        "\(Int(budget.thresholdPercent * 100))%",
+                        value: Binding(
+                            get: { Int(budget.thresholdPercent * 100) },
+                            set: { newVal in
+                                var config = state.governanceConfig
+                                var budgets = config.contextBudgets ?? ContextBudget.defaults
+                                budgets[key]?.thresholdPercent = Double(newVal) / 100.0
+                                config.contextBudgets = budgets
+                                state.updateGovernanceConfig(config)
+                            }
+                        ),
+                        in: 10...100, step: 5
+                    )
+                    .font(.system(size: 12, design: .monospaced))
+                }
+                HStack(spacing: 4) {
+                    Text("Relay").font(.system(size: 11)).foregroundStyle(Theme.creamDim)
+                    TextField("model", text: Binding(
+                        get: { budget.relayModel },
+                        set: { newVal in
+                            var config = state.governanceConfig
+                            var budgets = config.contextBudgets ?? ContextBudget.defaults
+                            budgets[key]?.relayModel = newVal
+                            config.contextBudgets = budgets
+                            state.updateGovernanceConfig(config)
+                        }
+                    ))
+                    .font(.system(size: 12, design: .monospaced))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 180)
+                }
             }
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(Theme.bgCard)
-            .clipShape(RoundedRectangle(cornerRadius: 5))
         }
+        .padding(.vertical, 4)
     }
 
     // MARK: - Tool Interception
@@ -1763,7 +1800,21 @@ struct GovernancePanel: View {
                     state.updateGovernanceConfig(config)
                 }.buttonStyle(.bordered).controlSize(.regular).tint(.red)
             }
+            VStack(alignment: .leading, spacing: 4) {
+                presetDescription("Strict", "Maximum safety. Blocks dangerous operations, warns on writes, full audit trail. All packaged rules enabled with circuit breakers.")
+                presetDescription("Standard", "Balanced safety for daily development. Sub-agent control, commit hygiene, test requirements.")
+                presetDescription("Minimal", "Monitoring only. Logs token usage warnings. No blocking.")
+                presetDescription("Packaged", "Install all recommended governance rules from Engrave.")
+            }
         }.padding(10).background(Theme.bgCard).clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func presetDescription(_ name: String, _ description: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(name).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.cream)
+                .frame(width: 70, alignment: .leading)
+            Text(description).font(.system(size: 12)).foregroundStyle(Theme.creamDim)
+        }
     }
 
     // MARK: - Event Log

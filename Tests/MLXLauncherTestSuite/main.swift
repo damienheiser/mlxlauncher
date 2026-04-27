@@ -111,7 +111,9 @@ tests.append(("Priority 3 packaging and persistence are wired", {
     try expect(services.contains("model-store.json"), "Model Store directories must persist")
     try expect(views.contains("Install Packaged"), "Governance UI must expose packaged feature toggles")
     try expect(views.contains("Context Exhaustion Relay"), "Governance UI must expose context relay budgets")
-    try expect(views.contains("Engrave UIA"), "Governance UI must expose UIA settings")
+    // UIA settings moved to Settings panel per user feedback — verify they exist somewhere
+    let settingsPanel = try read(root.appendingPathComponent("Sources/SettingsPanel.swift").path)
+    try expect(settingsPanel.contains("uia") || settingsPanel.contains("UIA"), "UIA settings must exist in Settings panel")
 }))
 
 tests.append(("All bundled runners are Engrave-governed", {

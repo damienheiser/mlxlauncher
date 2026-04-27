@@ -29,7 +29,7 @@ struct HITLPanel: View {
     private var header: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Human In The Loop")
+                Text("Human In The Loop Agent Interception")
                     .font(.thHeader)
                     .foregroundStyle(Theme.creamBold)
             }

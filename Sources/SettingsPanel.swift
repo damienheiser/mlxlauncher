@@ -53,28 +53,20 @@ struct SettingsPanel: View {
 
     private var categoryPicker: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 2) {
+            HStack(spacing: 4) {
                 ForEach(Category.allCases) { cat in
-                    Button {
-                        selectedCategory = cat
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: cat.icon)
-                                .font(.system(size: 11))
-                            Text(cat.rawValue)
-                                .font(.thSmall)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .foregroundStyle(selectedCategory == cat ? Theme.creamBold : Theme.creamDim)
-                        .background(selectedCategory == cat ? Theme.accentMagenta.opacity(0.35) : .clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    Button(action: { selectedCategory = cat }) {
+                        Text(cat.rawValue)
+                            .font(.thSmall)
+                            .foregroundColor(selectedCategory == cat ? Theme.creamBold : Theme.creamDim)
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(selectedCategory == cat ? Theme.accent.opacity(0.2) : Theme.bgCard)
+                            .cornerRadius(6)
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.horizontal)
         }
     }
 
@@ -153,8 +145,8 @@ struct SettingsPanel: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Theme").font(.thLabel).foregroundStyle(Theme.creamDim)
                         Picker("", selection: $state.appSettings.resolved.ui.theme) {
-                            Text("Synthaer Dark").tag("synthaer-dark")
-                            Text("Synthaer Light").tag("synthaer-light")
+                            Text("Engrave Dark").tag("Engrave Dark")
+                            Text("Engrave Light").tag("Engrave Light")
                             Text("Midnight").tag("midnight")
                             Text("Solarized").tag("solarized")
                         }
@@ -189,12 +181,12 @@ struct SettingsPanel: View {
                     }
 
                     // Font family
-                    settingsTextField(
-                        label: "Font Family",
-                        text: $fontFamily,
-                        placeholder: "System Default",
-                        mono: false
-                    )
+                    HStack {
+                        Text("Font Family").font(.thLabel).foregroundStyle(Theme.creamDim)
+                        Spacer()
+                        Text(fontFamily.isEmpty ? "System Default" : fontFamily)
+                            .font(.thBody).foregroundStyle(Theme.cream)
+                    }
 
                     // Minimum font size
                     VStack(alignment: .leading, spacing: 4) {
